@@ -1,12 +1,27 @@
 use std::sync::Arc;
 
-use wgpu::util::DeviceExt;
+use glam::IVec3;
 use winit::window::Window;
 
-use crate::mesh::{Mesh, Vertex};
-use crate::texture::Texture;
+mod camera;
+mod chunk_meshes;
+mod texture;
+
+pub use camera::Camera;
+
+use chunk_meshes::ChunkMeshes;
+use texture::Texture;
+
+use crate::mesher::{Mesh, Vertex};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32];
+const VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+    array_stride: size_of::<Vertex>() as wgpu::BufferAddress,
+    step_mode: wgpu::VertexStepMode::Vertex,
+    attributes: &VERTEX_ATTRIBUTES,
+};
 const SKY: wgpu::Color = wgpu::Color {
     r: 0.53,
     g: 0.72,
@@ -21,16 +36,14 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     depth_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    index_count: u32,
+    chunk_meshes: ChunkMeshes,
     transform_buffer: wgpu::Buffer,
     transform_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
 }
 
 impl Renderer {
-    pub async fn new(window: Arc<Window>, mesh: &Mesh) -> Self {
+    pub async fn new(window: Arc<Window>) -> Self {
         let instance = wgpu::Instance::new(
             wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())),
         );
@@ -86,7 +99,7 @@ impl Renderer {
             &device,
             &queue,
             "dirt",
-            include_bytes!("../textures/block/dirt.png"),
+            include_bytes!("../../textures/block/dirt.png"),
         );
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("texture"),
@@ -137,7 +150,7 @@ impl Renderer {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[Some(Vertex::layout())],
+                buffers: &[Some(VERTEX_LAYOUT)],
             },
             primitive: wgpu::PrimitiveState {
                 cull_mode: Some(wgpu::Face::Back),
@@ -161,17 +174,6 @@ impl Renderer {
             cache: None,
         });
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("chunk vertices"),
-            contents: bytemuck::cast_slice(&mesh.vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("chunk indices"),
-            contents: bytemuck::cast_slice(&mesh.indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
         let depth_view = create_depth_view(&device, &config);
         Self {
             surface,
@@ -180,13 +182,16 @@ impl Renderer {
             config,
             depth_view,
             pipeline,
-            vertex_buffer,
-            index_buffer,
-            index_count: mesh.indices.len() as u32,
+            chunk_meshes: ChunkMeshes::default(),
             transform_buffer,
             transform_bind_group,
             texture_bind_group,
         }
+    }
+
+    /// Replaces whatever mesh the chunk had; an empty mesh just removes it.
+    pub fn upload_chunk_mesh(&mut self, chunk: IVec3, mesh: &Mesh) {
+        self.chunk_meshes.insert(&self.device, chunk, mesh);
     }
 
     pub fn aspect_ratio(&self) -> f32 {
@@ -249,9 +254,11 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.transform_bind_group, &[]);
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.index_count, 0, 0..1);
+            for mesh in self.chunk_meshes.iter() {
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
