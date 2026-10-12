@@ -21,6 +21,25 @@ impl Vertex {
     }
 }
 
+/// Where one cube sits in the world; the GPU draws the same cube mesh once per instance.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct Instance {
+    pub position: [f32; 3],
+}
+
+impl Instance {
+    pub const ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![3 => Float32x3];
+
+    pub fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<Instance>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
 /// Per-face brightness so the cube reads as 3D before there is any lighting.
 const TOP: f32 = 1.0;
 const SIDE: f32 = 0.8;
