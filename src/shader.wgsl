@@ -17,10 +17,9 @@ fn vs_main(
     @location(0) position: vec3<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) shade: f32,
-    @location(3) instance_position: vec3<f32>,
 ) -> VertexOutput {
     var out: VertexOutput;
-    out.clip_position = transform * vec4<f32>(position + instance_position, 1.0);
+    out.clip_position = transform * vec4<f32>(position, 1.0);
     out.uv = uv;
     out.shade = shade;
     return out;

@@ -1,5 +1,6 @@
 mod camera;
-mod cube;
+mod chunk;
+mod mesh;
 mod renderer;
 mod texture;
 
@@ -12,6 +13,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use camera::Camera;
+use chunk::{Block, Chunk};
 use renderer::Renderer;
 
 struct App {
@@ -28,7 +30,10 @@ impl ApplicationHandler for App {
         }
         let attributes = Window::default_attributes().with_title("Mineless");
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
-        self.renderer = Some(pollster::block_on(Renderer::new(window.clone(), &scene())));
+        self.renderer = Some(pollster::block_on(Renderer::new(
+            window.clone(),
+            &mesh::build_chunk_mesh(&scene()),
+        )));
         self.window = Some(window);
     }
 
@@ -41,7 +46,8 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => renderer.resize(size.width, size.height),
             WindowEvent::RedrawRequested => {
                 let angle = self.started.elapsed().as_secs_f32() * 0.3;
-                self.camera.position = glam::vec3(angle.cos() * 6.0, 3.0, angle.sin() * 6.0);
+                self.camera.position =
+                    CENTRE + glam::vec3(angle.cos() * 6.0, 3.0, angle.sin() * 6.0);
                 renderer.render(self.camera.view_projection(renderer.aspect_ratio()));
                 window.request_redraw();
             }
@@ -50,14 +56,21 @@ impl ApplicationHandler for App {
     }
 }
 
-/// A small hand-placed arrangement until chunks exist: a 3x3 floor with a short pillar.
-fn scene() -> Vec<cube::Instance> {
-    let floor = (-1..=1).flat_map(|x| (-1..=1).map(move |z| [x as f32, 0.0, z as f32]));
-    let pillar = (1..=2).map(|y| [0.0, y as f32, 0.0]);
-    floor
-        .chain(pillar)
-        .map(|position| cube::Instance { position })
-        .collect()
+/// Where the hand-placed blocks sit inside the chunk; the camera orbits this point.
+const CENTRE: glam::Vec3 = glam::vec3(8.5, 1.0, 8.5);
+
+/// A small hand-placed arrangement until world generation exists: a 3x3 floor with a short pillar.
+fn scene() -> Chunk {
+    let mut chunk = Chunk::empty();
+    for x in 7..=9 {
+        for z in 7..=9 {
+            chunk.set(x, 0, z, Block::Solid);
+        }
+    }
+    for y in 1..=2 {
+        chunk.set(8, y, 8, Block::Solid);
+    }
+    chunk
 }
 
 fn main() {
@@ -66,7 +79,7 @@ fn main() {
     let mut app = App {
         window: None,
         renderer: None,
-        camera: Camera::looking_at(glam::vec3(6.0, 3.0, 0.0), glam::vec3(0.0, 0.5, 0.0)),
+        camera: Camera::looking_at(CENTRE + glam::vec3(6.0, 3.0, 0.0), CENTRE),
         started: Instant::now(),
     };
     event_loop.run_app(&mut app).expect("run event loop");

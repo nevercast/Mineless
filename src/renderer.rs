@@ -3,7 +3,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::cube;
+use crate::mesh::{Mesh, Vertex};
 use crate::texture::Texture;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -23,15 +23,14 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    instance_buffer: wgpu::Buffer,
-    instance_count: u32,
+    index_count: u32,
     transform_buffer: wgpu::Buffer,
     transform_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
 }
 
 impl Renderer {
-    pub async fn new(window: Arc<Window>, cubes: &[cube::Instance]) -> Self {
+    pub async fn new(window: Arc<Window>, mesh: &Mesh) -> Self {
         let instance = wgpu::Instance::new(
             wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())),
         );
@@ -127,18 +126,18 @@ impl Renderer {
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("cube"),
+            label: Some("chunk"),
             bind_group_layouts: &[Some(&transform_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("cube"),
+            label: Some("chunk"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[Some(cube::Vertex::layout()), Some(cube::Instance::layout())],
+                buffers: &[Some(Vertex::layout())],
             },
             primitive: wgpu::PrimitiveState {
                 cull_mode: Some(wgpu::Face::Back),
@@ -163,20 +162,14 @@ impl Renderer {
         });
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cube vertices"),
-            contents: bytemuck::cast_slice(&cube::VERTICES),
+            label: Some("chunk vertices"),
+            contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cube indices"),
-            contents: bytemuck::cast_slice(&cube::INDICES),
+            label: Some("chunk indices"),
+            contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cube instances"),
-            contents: bytemuck::cast_slice(cubes),
-            usage: wgpu::BufferUsages::VERTEX,
         });
 
         let depth_view = create_depth_view(&device, &config);
@@ -189,8 +182,7 @@ impl Renderer {
             pipeline,
             vertex_buffer,
             index_buffer,
-            instance_buffer,
-            instance_count: cubes.len() as u32,
+            index_count: mesh.indices.len() as u32,
             transform_buffer,
             transform_bind_group,
             texture_bind_group,
@@ -258,9 +250,8 @@ impl Renderer {
             pass.set_bind_group(0, &self.transform_bind_group, &[]);
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(0..cube::INDICES.len() as u32, 0, 0..self.instance_count);
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
