@@ -1,3 +1,4 @@
+mod avatar;
 mod mesher;
 mod render;
 mod spectator;
@@ -12,6 +13,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+use avatar::Avatar;
 use glam::{IVec3, Vec3, vec3};
 use render::{Camera, Renderer};
 use spectator::Spectator;
@@ -19,6 +21,7 @@ use world::World;
 
 struct App {
     world: World,
+    avatar: Avatar,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     camera: Camera,
@@ -69,7 +72,10 @@ impl ApplicationHandler for App {
                 let seconds = (now - self.last_frame).as_secs_f32();
                 self.last_frame = now;
                 self.spectator.update(&mut self.camera, seconds);
-                renderer.render(self.camera.view_projection(renderer.aspect_ratio()));
+                renderer.render(
+                    self.camera.view_projection(renderer.aspect_ratio()),
+                    self.avatar.model_matrix(),
+                );
                 window.request_redraw();
             }
             _ => {}
@@ -116,6 +122,11 @@ fn main() {
     let event_loop = EventLoop::new().expect("create event loop");
     let mut app = App {
         world: world::arena::generate(WORLD_CHUNKS, GROUND_HEIGHT, WALL_HEIGHT),
+        // On flat ground near the centre, turned towards the starting camera.
+        avatar: Avatar {
+            position: vec3(38.5, GROUND_HEIGHT as f32, 26.5),
+            yaw: -135f32.to_radians(),
+        },
         window: None,
         renderer: None,
         camera: Camera::looking_at(CENTRE + vec3(40.0, 25.0, 40.0), CENTRE),

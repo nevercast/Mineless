@@ -3,12 +3,14 @@ use std::sync::Arc;
 use glam::IVec3;
 use winit::window::Window;
 
+mod avatar;
 mod camera;
 mod chunk_meshes;
 mod texture;
 
 pub use camera::Camera;
 
+use avatar::AvatarRenderer;
 use chunk_meshes::ChunkMeshes;
 use texture::BlockTextures;
 
@@ -37,6 +39,7 @@ pub struct Renderer {
     depth_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
     chunk_meshes: ChunkMeshes,
+    avatar: AvatarRenderer,
     transform_buffer: wgpu::Buffer,
     transform_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
@@ -169,6 +172,7 @@ impl Renderer {
             cache: None,
         });
 
+        let avatar = AvatarRenderer::new(&device, &queue, config.format, DEPTH_FORMAT);
         let depth_view = create_depth_view(&device, &config);
         Self {
             surface,
@@ -178,6 +182,7 @@ impl Renderer {
             depth_view,
             pipeline,
             chunk_meshes: ChunkMeshes::default(),
+            avatar,
             transform_buffer,
             transform_bind_group,
             texture_bind_group,
@@ -203,7 +208,8 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, &self.config);
     }
 
-    pub fn render(&mut self, transform: glam::Mat4) {
+    /// Draws the terrain and the avatar, placed by `avatar_model`.
+    pub fn render(&mut self, view_projection: glam::Mat4, avatar_model: glam::Mat4) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -217,8 +223,11 @@ impl Renderer {
             }
             _ => return,
         };
-        self.queue
-            .write_buffer(&self.transform_buffer, 0, bytemuck::bytes_of(&transform));
+        self.queue.write_buffer(
+            &self.transform_buffer,
+            0,
+            bytemuck::bytes_of(&view_projection),
+        );
 
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -254,6 +263,8 @@ impl Renderer {
                 pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
+            self.avatar
+                .draw(&self.queue, &mut pass, view_projection * avatar_model);
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
