@@ -134,13 +134,16 @@ const CENTRE: Vec3 = vec3(32.0, GROUND_HEIGHT as f32, 32.0);
 
 const MAX_CATCH_UP: f32 = 0.25;
 
-/// Two players on flat ground near the centre: one standing still looking up and to its left,
-/// one walking towards the big hill, looking down and to its right.
+/// Two players near the centre: one dropped from twelve blocks up to stand looking up and to its
+/// left, one walking into the centre pit, looking down and to its right.
 fn test_players() -> Vec<Player> {
-    let mut watcher = Player::new(vec3(37.5, GROUND_HEIGHT as f32, 27.5), -135f32.to_radians());
+    let mut watcher = Player::new(
+        vec3(37.5, GROUND_HEIGHT as f32 + 12.0, 27.5),
+        -135f32.to_radians(),
+    );
     watcher.head_yaw = 0.6;
     watcher.head_pitch = 0.5;
-    let mut walker = Player::new(vec3(39.5, GROUND_HEIGHT as f32, 25.5), 160f32.to_radians());
+    let mut walker = Player::new(vec3(39.5, GROUND_HEIGHT as f32, 25.5), 123f32.to_radians());
     walker.head_yaw = -0.35;
     walker.head_pitch = -0.3;
     walker.walking = true;
