@@ -1,5 +1,7 @@
 mod avatar;
 mod mesher;
+mod physics;
+mod player;
 mod render;
 mod spectator;
 mod world;
@@ -13,15 +15,18 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use avatar::{Avatar, Pose};
+use avatar::Avatar;
 use glam::{IVec3, Vec3, vec3};
+use player::{Player, TICK_RATE};
 use render::{Camera, Renderer};
 use spectator::Spectator;
 use world::World;
 
 struct App {
     world: World,
-    avatars: Vec<Avatar>,
+    players: Vec<Player>,
+    /// Seconds of simulation time owed but not yet ticked.
+    unsimulated: f32,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     camera: Camera,
@@ -72,12 +77,19 @@ impl ApplicationHandler for App {
                 let seconds = (now - self.last_frame).as_secs_f32();
                 self.last_frame = now;
                 self.spectator.update(&mut self.camera, seconds);
-                for avatar in &mut self.avatars {
-                    avatar.animate(seconds);
+                // Simulate in fixed ticks; a long stall drops time rather than ticking to catch up.
+                self.unsimulated = (self.unsimulated + seconds).min(MAX_CATCH_UP);
+                while self.unsimulated >= 1.0 / TICK_RATE {
+                    self.unsimulated -= 1.0 / TICK_RATE;
+                    for player in &mut self.players {
+                        wander(player, &self.world);
+                    }
                 }
+                let alpha = self.unsimulated * TICK_RATE;
+                let avatars: Vec<Avatar> = self.players.iter().map(|p| p.avatar(alpha)).collect();
                 renderer.render(
                     self.camera.view_projection(renderer.aspect_ratio()),
-                    &self.avatars,
+                    &avatars,
                 );
                 window.request_redraw();
             }
@@ -120,31 +132,28 @@ const WALL_HEIGHT: i32 = 20;
 /// The middle of the world at ground level; the camera starts out looking at it.
 const CENTRE: Vec3 = vec3(32.0, GROUND_HEIGHT as f32, 32.0);
 
-/// Two avatars side by side on flat ground near the centre, turned towards the starting camera:
-/// one standing still looking up and to its left, one running on the spot looking down and right.
-fn test_avatars() -> Vec<Avatar> {
-    let facing_camera = -135f32.to_radians();
-    vec![
-        Avatar {
-            position: vec3(37.5, GROUND_HEIGHT as f32, 27.5),
-            yaw: facing_camera,
-            pose: Pose {
-                head_yaw: 0.6,
-                head_pitch: 0.5,
-                ..Default::default()
-            },
-        },
-        Avatar {
-            position: vec3(39.5, GROUND_HEIGHT as f32, 25.5),
-            yaw: facing_camera,
-            pose: Pose {
-                head_yaw: -0.35,
-                head_pitch: -0.3,
-                swing: 1.0,
-                ..Default::default()
-            },
-        },
-    ]
+const MAX_CATCH_UP: f32 = 0.25;
+
+/// Two players on flat ground near the centre: one standing still looking up and to its left,
+/// one walking towards the big hill, looking down and to its right.
+fn test_players() -> Vec<Player> {
+    let mut watcher = Player::new(vec3(37.5, GROUND_HEIGHT as f32, 27.5), -135f32.to_radians());
+    watcher.head_yaw = 0.6;
+    watcher.head_pitch = 0.5;
+    let mut walker = Player::new(vec3(39.5, GROUND_HEIGHT as f32, 25.5), 160f32.to_radians());
+    walker.head_yaw = -0.35;
+    walker.head_pitch = -0.3;
+    walker.walking = true;
+    vec![watcher, walker]
+}
+
+/// Stand-in behaviour until players have a controller: walk forward and turn away from anything
+/// that blocks the way.
+fn wander(player: &mut Player, world: &World) {
+    let blocked = player.tick(world);
+    if player.walking && (blocked.x || blocked.z) {
+        player.yaw += 100f32.to_radians();
+    }
 }
 
 fn main() {
@@ -152,7 +161,8 @@ fn main() {
     let event_loop = EventLoop::new().expect("create event loop");
     let mut app = App {
         world: world::arena::generate(WORLD_CHUNKS, GROUND_HEIGHT, WALL_HEIGHT),
-        avatars: test_avatars(),
+        players: test_players(),
+        unsimulated: 0.0,
         window: None,
         renderer: None,
         camera: Camera::looking_at(CENTRE + vec3(40.0, 25.0, 40.0), CENTRE),

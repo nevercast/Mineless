@@ -10,8 +10,6 @@ const SKIN_SIZE: f32 = 64.0;
 /// Peak limb angles in radians at full swing.
 const LEG_SWING: f32 = 0.8;
 const ARM_SWING: f32 = 0.6;
-/// Radians of swing phase per second at full swing: a little over one stride per second.
-const STRIDE_RATE: f32 = 9.0;
 
 pub struct Avatar {
     /// Centre of the feet.
@@ -29,15 +27,11 @@ pub struct Pose {
     pub head_pitch: f32,
     /// How far arms and legs swing, from 0 standing still to 1 running.
     pub swing: f32,
-    /// Where in the stride the limbs are; it advances with `swing`.
+    /// Where in the stride the limbs are, in radians.
     pub swing_phase: f32,
 }
 
 impl Avatar {
-    pub fn animate(&mut self, seconds: f32) {
-        self.pose.swing_phase += self.pose.swing * STRIDE_RATE * seconds;
-    }
-
     /// One world transform per entry of `PARTS`, in the same order.
     pub fn part_transforms(&self) -> [Mat4; PART_COUNT] {
         let model = Mat4::from_rotation_translation(Quat::from_rotation_y(self.yaw), self.position);
@@ -211,7 +205,7 @@ mod tests {
 
     #[test]
     fn swinging_limbs_turn_about_their_joints() {
-        let mut avatar = Avatar {
+        let avatar = Avatar {
             position: Vec3::ZERO,
             yaw: 0.0,
             pose: Pose {
@@ -220,7 +214,6 @@ mod tests {
                 ..Default::default()
             },
         };
-        avatar.animate(0.1);
         for (part, transform) in PARTS.iter().zip(avatar.part_transforms()) {
             let pivot = part.pivot / TEXELS_PER_BLOCK;
             assert!(transform.transform_point3(pivot).abs_diff_eq(pivot, 1e-5));
