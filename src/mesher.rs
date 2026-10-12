@@ -10,6 +10,41 @@ pub struct Vertex {
     pub position: [f32; 3],
     pub uv: [f32; 2],
     pub shade: f32,
+    /// Which layer of the block texture array to sample.
+    pub tile: u32,
+}
+
+/// A block face texture. Discriminants are layer indices in the renderer's texture array.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tile {
+    GrassTop,
+    GrassSide,
+    Dirt,
+    Stone,
+    Cobblestone,
+}
+
+impl Tile {
+    pub const ALL: [Tile; 5] = [
+        Tile::GrassTop,
+        Tile::GrassSide,
+        Tile::Dirt,
+        Tile::Stone,
+        Tile::Cobblestone,
+    ];
+
+    /// The tile for one face of a block; `normal_y` picks top or bottom faces.
+    fn for_face(block: Block, normal_y: i32) -> Tile {
+        match (block, normal_y) {
+            (Block::Grass, 1) => Tile::GrassTop,
+            (Block::Grass, -1) => Tile::Dirt,
+            (Block::Grass, _) => Tile::GrassSide,
+            (Block::Dirt, _) => Tile::Dirt,
+            (Block::Stone, _) => Tile::Stone,
+            (Block::Cobblestone, _) => Tile::Cobblestone,
+            (Block::Air, _) => unreachable!("air has no faces"),
+        }
+    }
 }
 
 /// CPU-side triangles for one chunk, in world block units, ready for the renderer to upload.
@@ -50,12 +85,14 @@ pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> Mesh {
         for z in 0..CHUNK_SIZE as i32 {
             for x in 0..CHUNK_SIZE as i32 {
                 let position = origin + IVec3::new(x, y, z);
-                if world.block(position) == Block::Air {
+                let block = world.block(position);
+                if block == Block::Air {
                     continue;
                 }
                 for face in &FACES {
                     if world.block(position + face.normal) == Block::Air {
-                        push_face(&mut mesh, face, position.as_vec3().to_array());
+                        let tile = Tile::for_face(block, face.normal.y);
+                        push_face(&mut mesh, face, position.as_vec3().to_array(), tile);
                     }
                 }
             }
@@ -64,7 +101,7 @@ pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> Mesh {
     mesh
 }
 
-fn push_face(mesh: &mut Mesh, face: &Face, origin: [f32; 3]) {
+fn push_face(mesh: &mut Mesh, face: &Face, origin: [f32; 3], tile: Tile) {
     let base = mesh.vertices.len() as u32;
     for (corner, uv) in face.corners.iter().zip(UVS) {
         mesh.vertices.push(Vertex {
@@ -75,6 +112,7 @@ fn push_face(mesh: &mut Mesh, face: &Face, origin: [f32; 3]) {
             ],
             uv,
             shade: face.shade,
+            tile: tile as u32,
         });
     }
     // Two counter-clockwise triangles.
@@ -93,23 +131,23 @@ mod tests {
     #[test]
     fn lone_block_has_six_faces() {
         let mut world = World::empty(IVec3::ONE);
-        world.set_block(IVec3::new(3, 3, 3), Block::Solid);
+        world.set_block(IVec3::new(3, 3, 3), Block::Stone);
         assert_eq!(face_count(&world, IVec3::ZERO), 6);
     }
 
     #[test]
     fn touching_faces_are_culled() {
         let mut world = World::empty(IVec3::ONE);
-        world.set_block(IVec3::new(3, 3, 3), Block::Solid);
-        world.set_block(IVec3::new(4, 3, 3), Block::Solid);
+        world.set_block(IVec3::new(3, 3, 3), Block::Stone);
+        world.set_block(IVec3::new(4, 3, 3), Block::Stone);
         assert_eq!(face_count(&world, IVec3::ZERO), 10);
     }
 
     #[test]
     fn faces_between_chunks_are_culled() {
         let mut world = World::empty(IVec3::new(2, 1, 1));
-        world.set_block(IVec3::new(15, 0, 0), Block::Solid);
-        world.set_block(IVec3::new(16, 0, 0), Block::Solid);
+        world.set_block(IVec3::new(15, 0, 0), Block::Stone);
+        world.set_block(IVec3::new(16, 0, 0), Block::Stone);
         assert_eq!(face_count(&world, IVec3::ZERO), 5);
         assert_eq!(face_count(&world, IVec3::X), 5);
     }

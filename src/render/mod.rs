@@ -10,13 +10,13 @@ mod texture;
 pub use camera::Camera;
 
 use chunk_meshes::ChunkMeshes;
-use texture::Texture;
+use texture::BlockTextures;
 
 use crate::mesher::{Mesh, Vertex};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32];
+const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32, 3 => Uint32];
 const VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
     array_stride: size_of::<Vertex>() as wgpu::BufferAddress,
     step_mode: wgpu::VertexStepMode::Vertex,
@@ -95,12 +95,7 @@ impl Renderer {
             }],
         });
 
-        let texture = Texture::from_png(
-            &device,
-            &queue,
-            "dirt",
-            include_bytes!("../../textures/block/dirt.png"),
-        );
+        let texture = BlockTextures::load(&device, &queue);
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("texture"),
             entries: &[
@@ -109,7 +104,7 @@ impl Renderer {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },
                     count: None,

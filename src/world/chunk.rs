@@ -2,12 +2,15 @@
 pub const CHUNK_SIZE: usize = 16;
 const VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 
-/// What occupies one block cell. Distinct block types arrive with step 6.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+/// What occupies one block cell.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Block {
     #[default]
     Air,
-    Solid,
+    Grass,
+    Dirt,
+    Stone,
+    Cobblestone,
 }
 
 /// A fixed-size cube of blocks addressed by local coordinates in `0..CHUNK_SIZE`.
