@@ -1,3 +1,5 @@
-Textures: Faithful 32x Java, https://faithfulpack.net/
+Block textures: Faithful 32x Java, https://faithfulpack.net/
 Source: https://github.com/Faithful-Resource-Pack/Faithful-32x-Java (java-latest branch)
 This is an unofficial selective subset.
+
+entity/player.png is an original placeholder skin made for Mineless.
