@@ -14,6 +14,7 @@ use avatar::AvatarRenderer;
 use chunk_meshes::ChunkMeshes;
 use texture::BlockTextures;
 
+use crate::avatar::Avatar;
 use crate::mesher::{Mesh, Vertex};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -172,7 +173,13 @@ impl Renderer {
             cache: None,
         });
 
-        let avatar = AvatarRenderer::new(&device, &queue, config.format, DEPTH_FORMAT);
+        let avatar = AvatarRenderer::new(
+            &device,
+            &queue,
+            &transform_layout,
+            config.format,
+            DEPTH_FORMAT,
+        );
         let depth_view = create_depth_view(&device, &config);
         Self {
             surface,
@@ -208,8 +215,7 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, &self.config);
     }
 
-    /// Draws the terrain and the avatar, placed by `avatar_model`.
-    pub fn render(&mut self, view_projection: glam::Mat4, avatar_model: glam::Mat4) {
+    pub fn render(&mut self, view_projection: glam::Mat4, avatars: &[Avatar]) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -228,6 +234,7 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&view_projection),
         );
+        self.avatar.prepare(&self.device, &self.queue, avatars);
 
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -263,8 +270,7 @@ impl Renderer {
                 pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
-            self.avatar
-                .draw(&self.queue, &mut pass, view_projection * avatar_model);
+            self.avatar.draw(&mut pass, &self.transform_bind_group);
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);

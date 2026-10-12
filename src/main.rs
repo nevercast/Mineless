@@ -13,7 +13,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use avatar::Avatar;
+use avatar::{Avatar, Pose};
 use glam::{IVec3, Vec3, vec3};
 use render::{Camera, Renderer};
 use spectator::Spectator;
@@ -21,7 +21,7 @@ use world::World;
 
 struct App {
     world: World,
-    avatar: Avatar,
+    avatars: Vec<Avatar>,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     camera: Camera,
@@ -72,9 +72,12 @@ impl ApplicationHandler for App {
                 let seconds = (now - self.last_frame).as_secs_f32();
                 self.last_frame = now;
                 self.spectator.update(&mut self.camera, seconds);
+                for avatar in &mut self.avatars {
+                    avatar.animate(seconds);
+                }
                 renderer.render(
                     self.camera.view_projection(renderer.aspect_ratio()),
-                    self.avatar.model_matrix(),
+                    &self.avatars,
                 );
                 window.request_redraw();
             }
@@ -117,16 +120,39 @@ const WALL_HEIGHT: i32 = 20;
 /// The middle of the world at ground level; the camera starts out looking at it.
 const CENTRE: Vec3 = vec3(32.0, GROUND_HEIGHT as f32, 32.0);
 
+/// Two avatars side by side on flat ground near the centre, turned towards the starting camera:
+/// one standing still looking up and to its left, one running on the spot looking down and right.
+fn test_avatars() -> Vec<Avatar> {
+    let facing_camera = -135f32.to_radians();
+    vec![
+        Avatar {
+            position: vec3(37.5, GROUND_HEIGHT as f32, 27.5),
+            yaw: facing_camera,
+            pose: Pose {
+                head_yaw: 0.6,
+                head_pitch: 0.5,
+                ..Default::default()
+            },
+        },
+        Avatar {
+            position: vec3(39.5, GROUND_HEIGHT as f32, 25.5),
+            yaw: facing_camera,
+            pose: Pose {
+                head_yaw: -0.35,
+                head_pitch: -0.3,
+                swing: 1.0,
+                ..Default::default()
+            },
+        },
+    ]
+}
+
 fn main() {
     env_logger::init();
     let event_loop = EventLoop::new().expect("create event loop");
     let mut app = App {
         world: world::arena::generate(WORLD_CHUNKS, GROUND_HEIGHT, WALL_HEIGHT),
-        // On flat ground near the centre, turned towards the starting camera.
-        avatar: Avatar {
-            position: vec3(38.5, GROUND_HEIGHT as f32, 26.5),
-            yaw: -135f32.to_radians(),
-        },
+        avatars: test_avatars(),
         window: None,
         renderer: None,
         camera: Camera::looking_at(CENTRE + vec3(40.0, 25.0, 40.0), CENTRE),
