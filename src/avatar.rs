@@ -80,57 +80,41 @@ struct Part {
     size: Vec3,
     pivot: Vec3,
     skin_origin: (f32, f32),
+    /// Texels added to each side across X and Z, without changing the skin mapping.
+    grow: f32,
 }
 
-const fn part(min: [f32; 3], size: [f32; 3], pivot: [f32; 3], skin_origin: (f32, f32)) -> Part {
+const fn part(
+    min: [f32; 3],
+    size: [f32; 3],
+    pivot: [f32; 3],
+    skin_origin: (f32, f32),
+    grow: f32,
+) -> Part {
     Part {
         min: vec3(min[0], min[1], min[2]),
         size: vec3(size[0], size[1], size[2]),
         pivot: vec3(pivot[0], pivot[1], pivot[2]),
         skin_origin,
+        grow,
     }
 }
 
 pub const PART_COUNT: usize = 6;
 
+/// Legs share their outer sides with the body's sides, so they're widened a touch to cover them
+/// rather than z-fight while swinging.
+const LEG_GROW: f32 = 0.05;
+
 /// The avatar faces -Z, so its right side is +X. Pivots are the neck, shoulders and hips.
+#[rustfmt::skip]
 const PARTS: [Part; PART_COUNT] = [
-    part(
-        [-4.0, 24.0, -4.0],
-        [8.0, 8.0, 8.0],
-        [0.0, 24.0, 0.0],
-        (0.0, 0.0),
-    ), // head
-    part(
-        [-4.0, 12.0, -2.0],
-        [8.0, 12.0, 4.0],
-        [0.0, 12.0, 0.0],
-        (16.0, 16.0),
-    ), // body
-    part(
-        [4.0, 12.0, -2.0],
-        [4.0, 12.0, 4.0],
-        [5.0, 22.0, 0.0],
-        (40.0, 16.0),
-    ), // right arm
-    part(
-        [-8.0, 12.0, -2.0],
-        [4.0, 12.0, 4.0],
-        [-5.0, 22.0, 0.0],
-        (32.0, 48.0),
-    ), // left arm
-    part(
-        [0.0, 0.0, -2.0],
-        [4.0, 12.0, 4.0],
-        [2.0, 12.0, 0.0],
-        (0.0, 16.0),
-    ), // right leg
-    part(
-        [-4.0, 0.0, -2.0],
-        [4.0, 12.0, 4.0],
-        [-2.0, 12.0, 0.0],
-        (16.0, 48.0),
-    ), // left leg
+    part([-4.0, 24.0, -4.0], [8.0, 8.0, 8.0], [0.0, 24.0, 0.0], (0.0, 0.0), 0.0), // head
+    part([-4.0, 12.0, -2.0], [8.0, 12.0, 4.0], [0.0, 12.0, 0.0], (16.0, 16.0), 0.0), // body
+    part([4.0, 12.0, -2.0], [4.0, 12.0, 4.0], [5.0, 22.0, 0.0], (40.0, 16.0), 0.0), // right arm
+    part([-8.0, 12.0, -2.0], [4.0, 12.0, 4.0], [-5.0, 22.0, 0.0], (32.0, 48.0), 0.0), // left arm
+    part([0.0, 0.0, -2.0], [4.0, 12.0, 4.0], [2.0, 12.0, 0.0], (0.0, 16.0), LEG_GROW), // right leg
+    part([-4.0, 0.0, -2.0], [4.0, 12.0, 4.0], [-2.0, 12.0, 0.0], (16.0, 48.0), LEG_GROW), // left leg
 ];
 
 /// The body in its rest pose in model space, as triangles: four vertices per face and six indices per face.
@@ -170,7 +154,7 @@ pub fn build_mesh() -> (Vec<AvatarVertex>, Vec<u16>) {
             ), // bottom
         ];
         for (normal, right, up, (left, top, width, height), shade) in faces {
-            let half = part.size / 2.0;
+            let half = part.size / 2.0 + vec3(part.grow, 0.0, part.grow);
             let face_centre = centre + normal * half;
             let right = right * half;
             let up = up * half;
