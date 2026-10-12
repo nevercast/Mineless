@@ -1,3 +1,4 @@
+pub mod arena;
 mod chunk;
 
 use std::collections::HashMap;
@@ -16,32 +17,6 @@ pub struct World {
 }
 
 impl World {
-    /// Flat ground `ground_height` blocks deep (stone, then three dirt, topped with grass) with a
-    /// cobblestone wall `wall_height` tall around the edge, spanning `chunks` from the origin.
-    pub fn flat_with_walls(chunks: IVec3, ground_height: i32, wall_height: i32) -> Self {
-        let mut world = Self::empty(chunks);
-        let extent = chunks * SIZE;
-        for x in 0..extent.x {
-            for z in 0..extent.z {
-                let on_edge = x == 0 || z == 0 || x == extent.x - 1 || z == extent.z - 1;
-                let height = if on_edge { wall_height } else { ground_height };
-                for y in 0..height.min(extent.y) {
-                    let block = if on_edge {
-                        Block::Cobblestone
-                    } else if y == ground_height - 1 {
-                        Block::Grass
-                    } else if y >= ground_height - 4 {
-                        Block::Dirt
-                    } else {
-                        Block::Stone
-                    };
-                    world.set_block(IVec3::new(x, y, z), block);
-                }
-            }
-        }
-        world
-    }
-
     /// Empty chunks spanning `chunks` from the origin.
     pub fn empty(chunks: IVec3) -> Self {
         let mut world = Self::default();

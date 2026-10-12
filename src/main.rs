@@ -105,7 +105,7 @@ fn set_mouse_capture(window: &Window, capture: bool) -> bool {
 
 /// 4x2x4 chunks: 64 blocks square and 32 tall, with walls tall enough to reach the upper chunks.
 const WORLD_CHUNKS: IVec3 = IVec3::new(4, 2, 4);
-const GROUND_HEIGHT: i32 = 6;
+const GROUND_HEIGHT: i32 = 8;
 const WALL_HEIGHT: i32 = 20;
 
 /// The middle of the world at ground level; the camera starts out looking at it.
@@ -115,7 +115,7 @@ fn main() {
     env_logger::init();
     let event_loop = EventLoop::new().expect("create event loop");
     let mut app = App {
-        world: World::flat_with_walls(WORLD_CHUNKS, GROUND_HEIGHT, WALL_HEIGHT),
+        world: world::arena::generate(WORLD_CHUNKS, GROUND_HEIGHT, WALL_HEIGHT),
         window: None,
         renderer: None,
         camera: Camera::looking_at(CENTRE + vec3(40.0, 25.0, 40.0), CENTRE),
