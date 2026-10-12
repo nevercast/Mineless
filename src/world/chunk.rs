@@ -29,16 +29,6 @@ impl Chunk {
     pub fn set(&mut self, x: usize, y: usize, z: usize, block: Block) {
         self.blocks[index(x, y, z)] = block;
     }
-
-    /// The block at a signed local position, treating anything outside the chunk as air.
-    pub fn get_or_air(&self, x: i32, y: i32, z: i32) -> Block {
-        let size = CHUNK_SIZE as i32;
-        if (0..size).contains(&x) && (0..size).contains(&y) && (0..size).contains(&z) {
-            self.get(x as usize, y as usize, z as usize)
-        } else {
-            Block::Air
-        }
-    }
 }
 
 /// Y-major layout so horizontal layers are contiguous.
