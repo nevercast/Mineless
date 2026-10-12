@@ -1,6 +1,7 @@
 mod camera;
 mod cube;
 mod renderer;
+mod texture;
 
 use std::sync::Arc;
 use std::time::Instant;
