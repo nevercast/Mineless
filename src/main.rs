@@ -17,7 +17,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use avatar::Avatar;
 use glam::{IVec3, Vec3, vec3};
-use player::{Player, TICK_RATE};
+use player::{JUMP_HEIGHTS, Player, TICK_RATE};
 use render::{Camera, Renderer};
 use spectator::Spectator;
 use world::World;
@@ -134,8 +134,8 @@ const CENTRE: Vec3 = vec3(32.0, GROUND_HEIGHT as f32, 32.0);
 
 const MAX_CATCH_UP: f32 = 0.25;
 
-/// Two players near the centre: one dropped from twelve blocks up to stand looking up and to its
-/// left, one walking into the centre pit, looking down and to its right.
+/// Two players near the centre: one dropped from twelve blocks up to hop in place looking up and
+/// to its left, one walking into the centre pit and jumping out, looking down and to its right.
 fn test_players() -> Vec<Player> {
     let mut watcher = Player::new(
         vec3(37.5, GROUND_HEIGHT as f32 + 12.0, 27.5),
@@ -150,12 +150,19 @@ fn test_players() -> Vec<Player> {
     vec![watcher, walker]
 }
 
-/// Stand-in behaviour until players have a controller: walk forward and turn away from anything
-/// that blocks the way.
+/// Stand-in behaviour until players have a controller. Walkers walk forward, jump at anything in
+/// the way, and turn away if it's still blocking on the way back down. Everyone else hops on the
+/// spot as low as a jump goes.
 fn wander(player: &mut Player, world: &World) {
     let blocked = player.tick(world);
-    if player.walking && (blocked.x || blocked.z) {
-        player.yaw += 100f32.to_radians();
+    if !player.walking {
+        player.jump(*JUMP_HEIGHTS.start());
+    } else if blocked.x || blocked.z {
+        if player.on_ground {
+            player.jump(*JUMP_HEIGHTS.end());
+        } else if player.fall_velocity < 0.0 {
+            player.yaw += 100f32.to_radians();
+        }
     }
 }
 

@@ -25,7 +25,7 @@ const HILLS: [Mound; 3] = [
     mound(20.0, 47.0, 6.0, 4.0),
 ];
 
-const PITS: [Mound; 2] = [mound(44.0, 17.0, 5.0, -6.0), mound(31.0, 31.0, 3.5, -4.0)];
+const PITS: [Mound; 2] = [mound(44.0, 17.0, 5.0, -6.0), mound(31.0, 31.0, 3.5, -3.0)];
 
 /// Grass on top of this many dirt blocks, then stone below.
 const DIRT_DEPTH: i32 = 3;

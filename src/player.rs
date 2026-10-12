@@ -19,6 +19,8 @@ const STRIDE_PER_TICK: f32 = 0.6662;
 /// itself, which settles at a terminal speed of 3.92 blocks per tick.
 const GRAVITY: f32 = 0.08;
 const AIR_DRAG: f32 = 0.98;
+/// Jump heights a player can choose from, in blocks. Minecraft's own jump peaks at about 1.25.
+pub const JUMP_HEIGHTS: std::ops::RangeInclusive<f32> = 0.5..=1.25;
 
 pub struct Player {
     pub body: Body,
@@ -58,6 +60,18 @@ impl Player {
         }
     }
 
+    /// Leaps off the ground to peak `height` blocks higher, clamped to `JUMP_HEIGHTS`. Does
+    /// nothing in the air; returns whether the jump happened.
+    pub fn jump(&mut self, height: f32) -> bool {
+        if !self.on_ground {
+            return false;
+        }
+        self.fall_velocity =
+            launch_velocity(height.clamp(*JUMP_HEIGHTS.start(), *JUMP_HEIGHTS.end()));
+        self.on_ground = false;
+        true
+    }
+
     /// Advances one tick. Returns which axes collision cut short.
     pub fn tick(&mut self, world: &World) -> BVec3 {
         self.previous = (self.body.position, self.swing, self.swing_phase);
@@ -71,12 +85,10 @@ impl Player {
         let step = walk.with_y(self.fall_velocity);
         let blocked = self.body.move_and_collide(world, step);
         // Like Minecraft, move first and then accelerate, so a body at rest drops a tick later.
+        // Gravity applies even on the ground, keeping a standing body pressed onto it.
         self.on_ground = blocked.y && step.y < 0.0;
-        self.fall_velocity = if blocked.y {
-            0.0
-        } else {
-            (self.fall_velocity - GRAVITY) * AIR_DRAG
-        };
+        let velocity = if blocked.y { 0.0 } else { self.fall_velocity };
+        self.fall_velocity = (velocity - GRAVITY) * AIR_DRAG;
 
         let walked = (self.body.position - self.previous.0).with_y(0.0).length();
         self.swing += ((walked * 4.0).min(1.0) - self.swing) * SWING_EASE;
@@ -98,6 +110,31 @@ impl Player {
             },
         }
     }
+}
+
+/// How high a leap at `velocity` blocks per tick rises under Minecraft's per-tick gravity.
+fn peak_height(mut velocity: f32) -> f32 {
+    let mut height = 0.0;
+    while velocity > 0.0 {
+        height += velocity;
+        velocity = (velocity - GRAVITY) * AIR_DRAG;
+    }
+    height
+}
+
+/// The upward velocity whose leap peaks at `height`. Peak height only grows with velocity, so a
+/// bisection finds it; Minecraft's own jump is 0.42.
+fn launch_velocity(height: f32) -> f32 {
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..32 {
+        let middle = (low + high) / 2.0;
+        if peak_height(middle) < height {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    high
 }
 
 #[cfg(test)]
@@ -131,7 +168,6 @@ mod tests {
             assert!((51.0 - height - fallen).abs() < 1e-3, "{heights:?}");
         }
         assert_eq!(player.body.position.y, 1.0);
-        assert_eq!(player.fall_velocity, 0.0);
     }
 
     #[test]
@@ -143,5 +179,43 @@ mod tests {
         }
         assert!((player.fall_velocity + 3.92).abs() < 1e-2);
         assert!(!player.on_ground);
+    }
+
+    #[test]
+    fn standing_stays_on_the_ground_every_tick() {
+        let world = floor();
+        let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0);
+        player.tick(&world);
+        for _ in 0..10 {
+            player.tick(&world);
+            assert!(player.on_ground);
+            assert_eq!(player.body.position.y, 1.0);
+        }
+    }
+
+    #[test]
+    fn minecraft_jump_velocity_peaks_at_its_usual_height() {
+        assert!((peak_height(0.42) - 1.2522).abs() < 1e-3);
+    }
+
+    #[test]
+    fn jumps_peak_at_the_requested_height() {
+        let world = floor();
+        for height in [0.5, 0.8, 1.25] {
+            let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0);
+            while !player.on_ground {
+                player.tick(&world);
+            }
+            assert!(player.jump(height));
+            assert!(!player.jump(height), "no jumping again in mid-air");
+            let mut peak: f32 = 0.0;
+            while {
+                player.tick(&world);
+                !player.on_ground
+            } {
+                peak = peak.max(player.body.position.y - 1.0);
+            }
+            assert!((peak - height).abs() < 1e-3, "{height}: {peak}");
+        }
     }
 }
