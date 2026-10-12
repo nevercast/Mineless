@@ -172,3 +172,24 @@ fn main() {
     };
     event_loop.run_app(&mut app).expect("run event loop");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wanderer_stays_inside_the_arena_walls() {
+        let world = world::arena::generate(WORLD_CHUNKS, GROUND_HEIGHT, WALL_HEIGHT);
+        let mut players = test_players();
+        let inside = (WORLD_CHUNKS * world::CHUNK_SIZE as i32).as_vec3() - 1.0;
+        // An hour of simulation.
+        for _ in 0..(3600.0 * TICK_RATE) as u32 {
+            for player in &mut players {
+                wander(player, &world);
+                let position = player.body.position;
+                assert!(position.x > 1.0 && position.z > 1.0, "{position}");
+                assert!(position.x < inside.x && position.z < inside.z, "{position}");
+            }
+        }
+    }
+}

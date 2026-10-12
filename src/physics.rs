@@ -5,6 +5,10 @@ use glam::{BVec3, IVec3, Vec3};
 
 use crate::world::{Block, World};
 
+/// How far boxes may sink into each other through rounding and still count as touching, not
+/// overlapping. Without it a box left a hair inside a face it rested on is no longer stopped by it.
+const EPSILON: f32 = 1e-4;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Aabb {
     pub min: Vec3,
@@ -25,12 +29,12 @@ impl Aabb {
     fn clip(&self, other: &Aabb, axis: usize, distance: f32) -> f32 {
         let overlaps_across = (0..3)
             .filter(|&a| a != axis)
-            .all(|a| self.max[a] > other.min[a] && self.min[a] < other.max[a]);
+            .all(|a| self.max[a] - EPSILON > other.min[a] && self.min[a] + EPSILON < other.max[a]);
         if !overlaps_across {
             distance
-        } else if distance > 0.0 && self.max[axis] <= other.min[axis] {
+        } else if distance > 0.0 && self.max[axis] - EPSILON <= other.min[axis] {
             distance.min(other.min[axis] - self.max[axis])
-        } else if distance < 0.0 && self.min[axis] >= other.max[axis] {
+        } else if distance < 0.0 && self.min[axis] + EPSILON >= other.max[axis] {
             distance.max(other.max[axis] - self.min[axis])
         } else {
             distance
@@ -132,6 +136,19 @@ mod tests {
         let blocked = body.move_and_collide(&room(), Vec3::new(2.0, 0.0, 0.5));
         assert!(body.position.abs_diff_eq(Vec3::new(2.7, 1.0, 6.0), 1e-5));
         assert_eq!(blocked, BVec3::new(true, false, false));
+    }
+
+    #[test]
+    fn rounding_past_a_face_does_not_let_a_body_through() {
+        let mut body = body_at(2.7 + 1e-5, 1.0 - 1e-5, 5.5);
+        body.move_and_collide(&room(), Vec3::new(0.5, 0.0, 0.0));
+        assert!(body.aabb().max.x <= 3.0);
+        let blocked = body.move_and_collide(&room(), Vec3::new(0.0, 0.0, 0.5));
+        assert_eq!(
+            blocked,
+            BVec3::FALSE,
+            "resting a hair inside the floor doesn't snag"
+        );
     }
 
     #[test]
