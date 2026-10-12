@@ -60,7 +60,7 @@ struct Face {
     /// Corners of a unit block at the origin, wound bottom-left, bottom-right, top-right, top-left
     /// as seen from outside, so each face maps the texture the same way up.
     corners: [[f32; 3]; 4],
-    /// Fixed brightness so blocks read as 3D before there is any lighting.
+    /// Fixed directional brightness so faces read as 3D before there is real lighting.
     shade: f32,
 }
 
@@ -92,7 +92,8 @@ pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> Mesh {
                 for face in &FACES {
                     if world.block(position + face.normal) == Block::Air {
                         let tile = Tile::for_face(block, face.normal.y);
-                        push_face(&mut mesh, face, position.as_vec3().to_array(), tile);
+                        let occlusion = face_occlusion(world, position, face);
+                        push_face(&mut mesh, face, position, tile, occlusion);
                     }
                 }
             }
@@ -101,23 +102,52 @@ pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> Mesh {
     mesh
 }
 
-fn push_face(mesh: &mut Mesh, face: &Face, origin: [f32; 3], tile: Tile) {
+/// Brightness for a vertex touched by 0, 1, 2 or 3 solid neighbours.
+const OCCLUSION_BRIGHTNESS: [f32; 4] = [1.0, 0.8, 0.65, 0.5];
+
+/// How many of the three blocks around each corner of a face are solid, looking from the air
+/// cell in front of the face. Two solid sides fully enclose the corner whatever the diagonal is.
+fn face_occlusion(world: &World, position: IVec3, face: &Face) -> [usize; 4] {
+    let in_front = position + face.normal;
+    let solid = |offset: IVec3| world.block(in_front + offset) != Block::Air;
+    face.corners.map(|corner| {
+        // Step towards the corner along each axis the face lies in (the ones the normal ignores).
+        let toward = IVec3::from_array(corner.map(|c| if c > 0.5 { 1 } else { -1 }));
+        let mut sides = [IVec3::ZERO; 2];
+        for (side, axis) in sides
+            .iter_mut()
+            .zip((0..3).filter(|&a| face.normal[a] == 0))
+        {
+            side[axis] = toward[axis];
+        }
+        let (side_a, side_b) = (solid(sides[0]), solid(sides[1]));
+        if side_a && side_b {
+            3
+        } else {
+            side_a as usize + side_b as usize + solid(sides[0] + sides[1]) as usize
+        }
+    })
+}
+
+fn push_face(mesh: &mut Mesh, face: &Face, position: IVec3, tile: Tile, occlusion: [usize; 4]) {
     let base = mesh.vertices.len() as u32;
-    for (corner, uv) in face.corners.iter().zip(UVS) {
+    let origin = position.as_vec3();
+    for ((corner, uv), occluders) in face.corners.iter().zip(UVS).zip(occlusion) {
         mesh.vertices.push(Vertex {
-            position: [
-                origin[0] + corner[0],
-                origin[1] + corner[1],
-                origin[2] + corner[2],
-            ],
+            position: (origin + glam::Vec3::from_array(*corner)).to_array(),
             uv,
-            shade: face.shade,
+            shade: face.shade * OCCLUSION_BRIGHTNESS[occluders],
             tile: tile as u32,
         });
     }
-    // Two counter-clockwise triangles.
-    mesh.indices
-        .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    // Split the quad along the diagonal whose ends are equally lit, otherwise the darkness
+    // interpolates across the wrong triangle and shows a visible crease.
+    let [a, b, c, d] = [base, base + 1, base + 2, base + 3];
+    if occlusion[0] + occlusion[2] > occlusion[1] + occlusion[3] {
+        mesh.indices.extend([b, c, d, b, d, a]);
+    } else {
+        mesh.indices.extend([a, b, c, a, c, d]);
+    }
 }
 
 #[cfg(test)]
@@ -150,5 +180,17 @@ mod tests {
         world.set_block(IVec3::new(16, 0, 0), Block::Stone);
         assert_eq!(face_count(&world, IVec3::ZERO), 5);
         assert_eq!(face_count(&world, IVec3::X), 5);
+    }
+
+    #[test]
+    fn corner_against_a_wall_is_occluded() {
+        let mut world = World::empty(IVec3::ONE);
+        let floor = IVec3::new(3, 3, 3);
+        world.set_block(floor, Block::Stone);
+        // A block sitting beside the floor's top face, against its +X edge.
+        world.set_block(floor + IVec3::new(1, 1, 0), Block::Stone);
+        let top = &FACES[2];
+        // Top face corners are (0,1,1), (1,1,1), (1,1,0), (0,1,0): the +X pair touch the wall.
+        assert_eq!(face_occlusion(&world, floor, top), [0, 1, 1, 0]);
     }
 }
