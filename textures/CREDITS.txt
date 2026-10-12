@@ -1,0 +1,3 @@
+Textures: Faithful 32x Java, https://faithfulpack.net/
+Source: https://github.com/Faithful-Resource-Pack/Faithful-32x-Java (java-latest branch)
+This is an unofficial selective subset.
