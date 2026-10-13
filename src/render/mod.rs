@@ -6,6 +6,7 @@ use glam::{IVec3, Mat4, Vec3};
 use winit::window::Window;
 
 mod avatar;
+mod border;
 mod camera;
 mod chunk_meshes;
 mod post;
@@ -16,6 +17,7 @@ mod texture;
 pub use camera::Camera;
 
 use avatar::AvatarRenderer;
+use border::Border;
 use camera::Frustum;
 use chunk_meshes::ChunkMeshes;
 use post::{HDR_FORMAT, PostProcess};
@@ -25,7 +27,7 @@ use texture::BlockTextures;
 use crate::mesher::{ChunkMesh, Vertex};
 use crate::sky::Sky;
 use sim::avatar::Avatar;
-use sim::world::CHUNK_SIZE;
+use sim::world::{CHUNK_SIZE, Extent, terrain};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Colour targets of every scene pipeline, matching `SceneOutput` in frame.wgsl.
@@ -88,13 +90,15 @@ pub struct Renderer {
     water_meshes: ChunkMeshes,
     avatar: AvatarRenderer,
     skybox: Skybox,
+    border: Border,
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
 }
 
 impl Renderer {
-    pub async fn new(window: Arc<Window>) -> Self {
+    /// `world` is how far the world reaches, for the border round its edge.
+    pub async fn new(window: Arc<Window>, world: Extent) -> Self {
         let instance = wgpu::Instance::new(
             wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())),
         );
@@ -168,6 +172,7 @@ impl Renderer {
 
         let avatar = AvatarRenderer::new(&device, &queue, &frame_layout);
         let skybox = Skybox::new(&device, &queue, &frame_layout);
+        let border = Border::new(&device, &frame_layout, world);
         let depth_view = create_depth_view(&device, &config);
         let post = PostProcess::new(&device, config.format, (config.width, config.height));
         Self {
@@ -183,6 +188,7 @@ impl Renderer {
             water_meshes: ChunkMeshes::default(),
             avatar,
             skybox,
+            border,
             frame_buffer,
             frame_bind_group,
             texture_bind_group: textures.bind_group,
@@ -292,6 +298,8 @@ impl Renderer {
                 draw_chunk(&mut pass, mesh);
             }
             self.avatar.draw(&mut pass, &self.frame_bind_group);
+            // The border is nearly always the farthest translucent thing, so it goes under water.
+            self.border.draw(&mut pass, &self.frame_bind_group);
 
             // Water blends over everything opaque, far chunks first so nearer water blends over
             // them. Faces within a chunk are unsorted; flat still water of one colour hides that.
@@ -339,11 +347,17 @@ enum Layer {
     Translucent,
 }
 
-/// A shader whose source is `body` after frame.wgsl's shared uniforms and lighting.
+/// A shader whose source is `body` after frame.wgsl's shared uniforms, lighting and fog. Fog is
+/// densest at sea level, so the shader takes it from the sim rather than a copy.
 fn frame_shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule {
+    let sea_level = format!("const SEA_LEVEL: f32 = {}.0;\n", terrain::SEA_LEVEL);
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
-        source: wgpu::ShaderSource::Wgsl([include_str!("frame.wgsl"), body].concat().into()),
+        source: wgpu::ShaderSource::Wgsl(
+            [&sea_level, include_str!("frame.wgsl"), body]
+                .concat()
+                .into(),
+        ),
     })
 }
 

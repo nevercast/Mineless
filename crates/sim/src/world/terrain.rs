@@ -1,7 +1,7 @@
 //! Seeded terrain from a 3D density field: low plains a few blocks above the sea, broken by
 //! upland regions that rise in escarpments with ledges, overhangs and now and then an arch or a
-//! lump of floating land, all inside a cobblestone wall that keeps walkers from falling off the
-//! edge of the world. Climate and biome then decide what the top few blocks of every surface are
+//! lump of floating land, all inside a full-height border that keeps walkers from falling off
+//! the edge of the world. Climate and biome then decide what the top few blocks of every surface are
 //! made of: sandy and gravelly coasts and sea floors, grass, bare rock on cliffs and snow on cold
 //! high ground.
 
@@ -10,9 +10,9 @@ use glam::{IVec3, Vec2, Vec3};
 mod trees;
 
 use super::chunk::Chunk;
-use super::{Block, CHUNK_SIZE, SIZE, World};
+use super::{Block, CHUNK_SIZE, Extent, SIZE, World};
 
-/// The world height the terrain is shaped for.
+/// The height the terrain is shaped for. The world may be taller, leaving air above it.
 pub const HEIGHT: i32 = 128;
 /// Air below this height that is open to the sea will be water; the sea surface is the top of
 /// the row below it.
@@ -87,8 +87,6 @@ const CLIFF_STEP: i32 = 3;
 /// Above this, hills are a mix of grass and bare rock in mid-sized patches.
 const HIGH_ROCK_LINE: i32 = SEA_LEVEL + 30;
 const HIGH_ROCK_SCALE: f32 = 16.0;
-/// How far the edge wall stands above the ground just inside it; walkers jump at most 1.25.
-const WALL_ABOVE_GROUND: i32 = 3;
 
 /// Density is sampled every `LATTICE_STEP` blocks and interpolated between: 3D noise for every
 /// block would make generation far too slow. The lattice is anchored to world coordinates, so
@@ -109,40 +107,38 @@ const SEABED_SALT: u32 = 0xfd70_46c5;
 const SHINGLE_SALT: u32 = 0xb55a_4f09;
 const HIGH_ROCK_SALT: u32 = 0x7feb_352d;
 
-/// Fills `chunks` from the origin with the terrain for `seed`. The same seed always gives the
-/// same world.
-pub fn generate(chunks: IVec3, seed: u32) -> World {
-    assert_eq!(
-        chunks.y * SIZE,
-        HEIGHT,
-        "terrain is shaped for its own height"
+/// Fills `extent` with the terrain for `seed`. The same seed always gives the same world.
+pub fn generate(extent: Extent, seed: u32) -> World {
+    assert!(
+        extent.height >= HEIGHT,
+        "the world must be at least as tall as the terrain"
     );
     let mut world = World::default();
-    for cx in 0..chunks.x {
-        for cy in 0..chunks.y {
-            for cz in 0..chunks.z {
-                let position = IVec3::new(cx, cy, cz);
-                world.insert(position, generate_chunk(seed, position, chunks));
-            }
-        }
+    for position in extent.chunk_positions() {
+        world.insert(position, generate_chunk(seed, position, extent));
     }
-    fill_sea(&mut world, chunks * SIZE);
+    fill_sea(&mut world, extent);
     world
 }
 
 /// Floods the sea: air below `SEA_LEVEL` becomes water where it connects, through air below
 /// sea level, to the open surface of the sea. Sealed hollows stay dry. Reachability doesn't
 /// depend on the order cells are visited, so the result is the same however it runs.
-fn fill_sea(world: &mut World, extent: IVec3) {
-    let index = |p: IVec3| ((p.x * SEA_LEVEL + p.y) * extent.z + p.z) as usize;
-    let mut reached = vec![false; (extent.x * SEA_LEVEL * extent.z) as usize];
+fn fill_sea(world: &mut World, extent: Extent) {
+    let (min, max) = (extent.min(), extent.max().with_y(SEA_LEVEL));
+    let size = max - min;
+    let index = |p: IVec3| {
+        let local = p - min;
+        ((local.x * size.y + local.y) * size.z + local.z) as usize
+    };
+    let mut reached = vec![false; size.element_product() as usize];
     let mut frontier = Vec::new();
     let surface = SEA_LEVEL - 1;
-    for x in 0..extent.x {
-        for z in 0..extent.z {
+    for x in min.x..max.x {
+        for z in min.z..max.z {
             let position = IVec3::new(x, surface, z);
             let open_to_sky =
-                (surface..extent.y).all(|y| world.block(IVec3::new(x, y, z)) == Block::Air);
+                (surface..extent.height).all(|y| world.block(IVec3::new(x, y, z)) == Block::Air);
             if open_to_sky {
                 reached[index(position)] = true;
                 frontier.push(position);
@@ -160,8 +156,7 @@ fn fill_sea(world: &mut World, extent: IVec3) {
             IVec3::NEG_Z,
         ] {
             let next = position + step;
-            let inside =
-                next.cmpge(IVec3::ZERO).all() && next.cmplt(extent.with_y(SEA_LEVEL)).all();
+            let inside = next.cmpge(min).all() && next.cmplt(max).all();
             if inside && !reached[index(next)] && world.block(next) == Block::Air {
                 reached[index(next)] = true;
                 frontier.push(next);
@@ -170,26 +165,30 @@ fn fill_sea(world: &mut World, extent: IVec3) {
     }
 }
 
-/// The chunk at `position` in a world `chunks` across, from nothing but the seed and those two,
-/// so chunks come out the same whatever order they are generated in.
-fn generate_chunk(seed: u32, position: IVec3, chunks: IVec3) -> Chunk {
+/// The chunk at `position` in a world reaching over `extent`, from nothing but the seed and
+/// those two, so chunks come out the same whatever order they are generated in.
+fn generate_chunk(seed: u32, position: IVec3, extent: Extent) -> Chunk {
     let mut chunk = Chunk::empty();
-    let extent = chunks * SIZE;
     let origin = position * SIZE;
-    let columns = Neighbourhood::around(seed, origin);
+    // Nothing of the terrain reaches its own height, so chunks above it skip shaping it.
+    let columns = (origin.y < HEIGHT).then(|| Neighbourhood::around(seed, origin));
     for local_x in 0..CHUNK_SIZE {
         for local_z in 0..CHUNK_SIZE {
             let (x, z) = (origin.x + local_x as i32, origin.z + local_z as i32);
-            let on_edge = x == 0 || z == 0 || x == extent.x - 1 || z == extent.z - 1;
-            let wall_top = on_edge.then(|| wall_top(&columns, x, z, extent));
-            let surface = Surface::at(seed, x, z, &columns);
-            let column = columns.column(x, z);
+            if !extent.contains_column(x, z) {
+                continue;
+            }
+            let on_edge = extent.on_edge(x, z);
+            let terrain = columns
+                .as_ref()
+                .filter(|_| !on_edge)
+                .map(|columns| (Surface::at(seed, x, z, columns), columns.column(x, z)));
             for local_y in 0..CHUNK_SIZE {
                 let y = origin.y + local_y as i32;
-                let block = match wall_top {
-                    Some(top) if y < top => Block::Cobblestone,
-                    Some(_) => Block::Air,
-                    None => surface.block(column, y),
+                let block = match &terrain {
+                    _ if on_edge => Block::WorldBorder,
+                    Some((surface, column)) => surface.block(column, y),
+                    None => Block::Air,
                 };
                 if block != Block::Air {
                     chunk.set(local_x, local_y, local_z, block);
@@ -197,23 +196,14 @@ fn generate_chunk(seed: u32, position: IVec3, chunks: IVec3) -> Chunk {
             }
         }
     }
-    trees::grow(seed, &mut chunk, origin, &columns, extent);
+    if let Some(columns) = &columns {
+        trees::grow(seed, &mut chunk, origin, columns, extent);
+    }
     chunk
 }
 
-/// The highest ground the wall borders, so it is never shorter than a jump.
-fn wall_top(columns: &Neighbourhood, x: i32, z: i32, extent: IVec3) -> i32 {
-    let inside = IVec3::new(x, 0, z).clamp(IVec3::ONE, extent - 2);
-    let ground = (-1..=1)
-        .flat_map(|dx| (-1..=1).map(move |dz| (dx, dz)))
-        .map(|(dx, dz)| columns.top(inside.x + dx, inside.z + dz))
-        .max()
-        .expect("the neighbourhood is never empty");
-    ground + WALL_ABOVE_GROUND
-}
-
-/// The columns of one chunk and a border round it, with their tops, since the wall, the cliff
-/// test and trees all look at neighbouring columns.
+/// The columns of one chunk and a border round it, with their tops, since the cliff test and
+/// trees look at neighbouring columns.
 struct Neighbourhood {
     /// World position of the first column.
     origin: IVec3,
@@ -674,14 +664,17 @@ mod tests {
     use super::*;
     use glam::IVec2;
 
-    const CHUNKS: IVec3 = IVec3::new(3, HEIGHT / SIZE, 3);
-
-    fn chunk_positions() -> Vec<IVec3> {
-        (0..CHUNKS.x)
-            .flat_map(|x| (0..CHUNKS.y).flat_map(move |y| (0..CHUNKS.z).map(move |z| (x, y, z))))
-            .map(IVec3::from)
-            .collect()
-    }
+    /// Small enough to generate quickly, taller than the terrain, and not a whole number of
+    /// chunks across, so the border stands partway into the outermost chunks.
+    const EXTENT: Extent = Extent {
+        half_width: 24,
+        height: HEIGHT + 2 * SIZE,
+    };
+    /// The world the game starts with.
+    const FULL_WORLD: Extent = Extent {
+        half_width: 160,
+        height: HEIGHT + 2 * SIZE,
+    };
 
     /// Every column of the 256x256 area from the origin, `x` major.
     fn columns(seed: u32) -> Vec<Column> {
@@ -701,12 +694,21 @@ mod tests {
 
     #[test]
     fn generation_order_does_not_change_the_world() {
-        let in_order = generate(CHUNKS, 5);
-        let mut reversed = World::default();
-        for position in chunk_positions().into_iter().rev() {
-            reversed.insert(position, generate_chunk(5, position, CHUNKS));
+        let positions: Vec<IVec3> = EXTENT.chunk_positions().collect();
+        assert!(
+            positions
+                .iter()
+                .any(|position| position.cmplt(IVec3::ZERO).any())
+        );
+        let mut in_order = World::default();
+        for &position in &positions {
+            in_order.insert(position, generate_chunk(5, position, EXTENT));
         }
-        for position in chunk_positions() {
+        let mut reversed = World::default();
+        for &position in positions.iter().rev() {
+            reversed.insert(position, generate_chunk(5, position, EXTENT));
+        }
+        for position in positions {
             assert!(
                 in_order.chunks[&position] == reversed.chunks[&position],
                 "{position}"
@@ -716,23 +718,23 @@ mod tests {
 
     #[test]
     fn a_chunk_generated_alone_matches_the_whole_world() {
-        let world = generate(CHUNKS, 5);
-        let wall = IVec3::new(0, 1, 2);
-        let interior = IVec3::new(1, 2, 1);
-        for position in [wall, interior] {
+        let world = generate(EXTENT, 5);
+        let border = IVec3::new(-2, 1, 0);
+        let interior = IVec3::new(-1, 2, 0);
+        for position in [border, interior] {
             assert!(
-                generate_chunk(5, position, CHUNKS) == world.chunks[&position],
+                generate_chunk(5, position, EXTENT) == world.chunks[&position],
                 "{position}"
             );
         }
-        assert_eq!(world.block(IVec3::new(0, 20, 40)), Block::Cobblestone);
+        assert_eq!(world.block(IVec3::new(-24, 20, 5)), Block::WorldBorder);
     }
 
     #[test]
     fn world_column_top_matches_the_terrain() {
-        let world = generate(CHUNKS, 5);
-        for x in (1..47).step_by(3) {
-            for z in (1..47).step_by(5) {
+        let world = generate(EXTENT, 5);
+        for x in (-23..23).step_by(3) {
+            for z in (-23..23).step_by(5) {
                 let lattice =
                     Lattice::around(5, IVec3::new(x, 0, z).div_euclid(IVec3::splat(SIZE)) * SIZE);
                 let top = lattice.column(x, z).top();
@@ -815,7 +817,7 @@ mod tests {
         );
     }
 
-    /// Dressed blocks of a 96x96 area in the middle of a 320-block world, clear of the wall, for
+    /// Dressed blocks of a 96x96 area in the middle of the full world, clear of the border, for
     /// seeds 0-3. Built once and shared, since it is the slowest part of these tests.
     fn dressed() -> &'static [World] {
         static WORLDS: std::sync::OnceLock<Vec<World>> = std::sync::OnceLock::new();
@@ -823,12 +825,11 @@ mod tests {
             (0..4)
                 .map(|seed| {
                     let mut world = World::default();
-                    for cx in 7..13 {
+                    for cx in -3..3 {
                         for cy in 0..HEIGHT / SIZE {
-                            for cz in 7..13 {
+                            for cz in -3..3 {
                                 let position = IVec3::new(cx, cy, cz);
-                                let full_world = IVec3::new(20, HEIGHT / SIZE, 20);
-                                world.insert(position, generate_chunk(seed, position, full_world));
+                                world.insert(position, generate_chunk(seed, position, FULL_WORLD));
                             }
                         }
                     }
@@ -841,9 +842,9 @@ mod tests {
     /// Every block of the dressed area with its seed and position.
     fn dressed_blocks() -> impl Iterator<Item = (u32, IVec3, Block)> {
         dressed().iter().zip(0..).flat_map(|(world, seed)| {
-            (112..208).flat_map(move |x| {
+            (-48..48).flat_map(move |x| {
                 (0..HEIGHT).flat_map(move |y| {
-                    (112..208).map(move |z| {
+                    (-48..48).map(move |z| {
                         let position = IVec3::new(x, y, z);
                         (seed, position, world.block(position))
                     })
@@ -895,25 +896,64 @@ mod tests {
                     let (temperature, _) = climate(seed, position.x, position.z);
                     assert!(snowy(temperature, y), "snow at {position}, seed {seed}");
                 }
-                Block::Cobblestone => panic!("cobblestone at {position}, away from the wall"),
+                Block::Cobblestone => panic!("terrain placed cobblestone at {position}"),
                 _ => {}
             }
         }
     }
 
     #[test]
-    fn cobblestone_is_only_the_wall() {
-        let world = generate(CHUNKS, 5);
-        let extent = CHUNKS * SIZE;
-        for x in 0..extent.x {
-            for z in 0..extent.z {
-                let on_edge = x == 0 || z == 0 || x == extent.x - 1 || z == extent.z - 1;
-                for y in 0..HEIGHT {
-                    if world.block(IVec3::new(x, y, z)) == Block::Cobblestone {
-                        assert!(on_edge, "{x}, {y}, {z}");
+    fn border_fills_the_edge_columns_and_terrain_places_no_cobblestone() {
+        let world = generate(EXTENT, 5);
+        // The outermost chunks reach past the world, from -32 to 31.
+        for x in -32..32 {
+            for z in -32..32 {
+                let inside = (-24..24).contains(&x) && (-24..24).contains(&z);
+                let on_edge = inside && (x == -24 || z == -24 || x == 23 || z == 23);
+                for y in 0..EXTENT.height {
+                    let block = world.block(IVec3::new(x, y, z));
+                    assert_eq!(block == Block::WorldBorder, on_edge, "{x}, {y}, {z}");
+                    assert_ne!(block, Block::Cobblestone, "{x}, {y}, {z}");
+                    assert!(inside || block == Block::Air, "{x}, {y}, {z}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn headroom_above_the_terrain_is_air() {
+        let world = generate(EXTENT, 5);
+        for x in -23..23 {
+            for z in -23..23 {
+                for y in 120..EXTENT.height {
+                    let block = world.block(IVec3::new(x, y, z));
+                    assert_eq!(block, Block::Air, "{x}, {y}, {z}");
+                }
+            }
+        }
+    }
+
+    /// Hashes of chunks generated for seed 142 before the world was centred, when it spanned
+    /// 0..320. Terrain depends only on world position, so the same chunks come out the same.
+    #[test]
+    fn centring_the_world_did_not_move_the_terrain() {
+        for (position, recorded) in [
+            (IVec3::new(2, 3, 4), 0xc182_2f7a_a2ba_7898_u64),
+            (IVec3::new(3, 3, 7), 0x0c86_dc2e_6ed6_9068),
+            (IVec3::new(6, 2, 3), 0x2eb0_1485_666c_8f55),
+        ] {
+            let chunk = generate_chunk(142, position, FULL_WORLD);
+            let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+            for y in 0..CHUNK_SIZE {
+                for z in 0..CHUNK_SIZE {
+                    for x in 0..CHUNK_SIZE {
+                        for byte in format!("{:?}", chunk.get(x, y, z)).bytes() {
+                            hash = (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+                        }
                     }
                 }
             }
+            assert_eq!(hash, recorded, "{position}");
         }
     }
 
@@ -941,9 +981,9 @@ mod tests {
     fn dressing_and_trees_keep_the_shape() {
         for seed in 0..4 {
             let world = &dressed()[seed as usize];
-            let lattice = Lattice::around(seed, IVec3::new(144, 0, 144));
-            for x in 144..160 {
-                for z in 144..160 {
+            let lattice = Lattice::around(seed, IVec3::new(-16, 0, -16));
+            for x in -16..0 {
+                for z in -16..0 {
                     let column = lattice.column(x, z);
                     for y in 0..HEIGHT {
                         let block = world.block(IVec3::new(x, y, z));
@@ -957,11 +997,17 @@ mod tests {
 
     #[test]
     fn sea_fills_open_water_and_what_connects_to_it() {
-        let chunks = IVec3::new(2, 4, 2);
-        let mut world = World::empty(chunks);
+        let extent = Extent {
+            half_width: 16,
+            height: 4 * SIZE,
+        };
+        let mut world = World::default();
+        for position in extent.chunk_positions() {
+            world.insert(position, Chunk::empty());
+        }
         let solid_below = SEA_LEVEL + 3;
-        for x in 0..32 {
-            for z in 0..32 {
+        for x in -16..16 {
+            for z in -16..16 {
                 for y in 0..solid_below {
                     world.set_block(IVec3::new(x, y, z), Block::Stone);
                 }
@@ -976,12 +1022,16 @@ mod tests {
                 }
             }
         };
-        // An open basin, a hollow joined to it by a one-block tunnel, and a sealed hollow.
-        dig(IVec3::new(4, 30, 4), IVec3::new(9, solid_below - 1, 9));
-        dig(IVec3::new(10, 32, 6), IVec3::new(13, 32, 6));
-        dig(IVec3::new(14, 30, 4), IVec3::new(16, 33, 8));
-        dig(IVec3::new(22, 30, 22), IVec3::new(25, 33, 25));
-        fill_sea(&mut world, chunks * SIZE);
+        // An open basin, a hollow reaching x = 0 joined to it by a one-block tunnel, and a sealed
+        // hollow.
+        dig(
+            IVec3::new(-12, 30, -12),
+            IVec3::new(-7, solid_below - 1, -7),
+        );
+        dig(IVec3::new(-6, 32, -10), IVec3::new(-3, 32, -10));
+        dig(IVec3::new(-2, 30, -12), IVec3::new(0, 33, -8));
+        dig(IVec3::new(6, 30, 6), IVec3::new(9, 33, 9));
+        fill_sea(&mut world, extent);
 
         let at = |x, y, z| world.block(IVec3::new(x, y, z));
         for y in 30..solid_below {
@@ -990,21 +1040,24 @@ mod tests {
             } else {
                 Block::Air
             };
-            assert_eq!(at(6, y, 6), expected, "basin at {y}");
+            assert_eq!(at(-10, y, -10), expected, "basin at {y}");
         }
-        assert_eq!(at(12, 32, 6), Block::Water);
-        assert_eq!(at(15, 30, 5), Block::Water);
-        assert_eq!(at(23, 31, 23), Block::Air);
+        assert_eq!(at(-4, 32, -10), Block::Water);
+        assert_eq!(at(0, 30, -11), Block::Water);
+        assert_eq!(at(7, 31, 7), Block::Air);
     }
 
     #[test]
     fn generated_sea_is_flooded_and_sealed_off() {
-        let chunks = IVec3::new(6, HEIGHT / SIZE, 6);
-        let world = generate(chunks, 6);
-        let extent = chunks * SIZE;
+        let extent = Extent {
+            half_width: 48,
+            height: HEIGHT,
+        };
+        let world = generate(extent, 6);
+        let (min, max) = (extent.min(), extent.max());
         let mut water = 0;
-        for x in 0..extent.x {
-            for z in 0..extent.z {
+        for x in min.x..max.x {
+            for z in min.z..max.z {
                 for y in 0..HEIGHT {
                     let position = IVec3::new(x, y, z);
                     if world.block(position) != Block::Water {
@@ -1022,8 +1075,10 @@ mod tests {
                     ] {
                         let next = position + step;
                         let open = next.y < SEA_LEVEL && world.block(next) == Block::Air;
-                        let outside = next.cmplt(IVec3::ZERO).any() || next.cmpge(extent).any();
-                        assert!(!open || outside, "air beside water at {next}");
+                        assert!(
+                            !open || !extent.contains(next),
+                            "air beside water at {next}"
+                        );
                     }
                 }
             }
@@ -1080,7 +1135,7 @@ mod tests {
         let forest = surfaces(FOREST, IVec2::new(2, 2), IVec2::new(9, 9));
         assert!(share(&forest, Biome::Forest) > 0.8);
 
-        let coast = surfaces(BEACH_AND_FLOATING, IVec2::new(8, 9), IVec2::new(19, 14));
+        let coast = surfaces(BEACH_AND_FLOATING, IVec2::new(-9, -8), IVec2::new(2, -3));
         let sand = coast
             .iter()
             .filter(|(surface, column)| {
@@ -1090,17 +1145,16 @@ mod tests {
             .count();
         assert!(sand > 1000, "{sand}");
 
-        // A lump of land floating over the island at about (195, 90, 87): the ground joined to
-        // it never reaches the edges of a box drawn round it, so nothing holds it up. Trees
-        // don't count, since a canopy can touch it without holding it up.
-        let world_chunks = IVec3::new(20, HEIGHT / SIZE, 20);
+        // A lump of land floating at about (76, 73, 54): the ground joined to it never reaches
+        // the edges of a box drawn round it, so nothing holds it up. Trees don't count, since a
+        // canopy can touch it without holding it up.
         let mut world = World::default();
-        let (low, high) = (IVec3::new(11, 4, 4), IVec3::new(13, 6, 6));
+        let (low, high) = (IVec3::new(4, 4, 2), IVec3::new(5, 5, 4));
         for cx in low.x..=high.x {
             for cy in low.y..=high.y {
                 for cz in low.z..=high.z {
                     let position = IVec3::new(cx, cy, cz);
-                    let chunk = generate_chunk(BEACH_AND_FLOATING, position, world_chunks);
+                    let chunk = generate_chunk(BEACH_AND_FLOATING, position, FULL_WORLD);
                     world.insert(position, chunk);
                 }
             }
@@ -1110,7 +1164,7 @@ mod tests {
             let block = world.block(position);
             block.is_solid() && !matches!(block, Block::OakLog(_) | Block::OakLeaves)
         };
-        let start = IVec3::new(195, 90, 87);
+        let start = IVec3::new(74, 72, 56);
         assert!(ground(start));
         let mut reached = std::collections::HashSet::from([start]);
         let mut frontier = vec![start];

@@ -4,15 +4,15 @@
 
 use glam::{IVec2, IVec3, Vec3Swizzles};
 
-use super::{Biome, Block, Chunk, Neighbourhood, SEA_LEVEL, SIZE, Surface, hash};
+use super::{Biome, Block, Chunk, Extent, Neighbourhood, SEA_LEVEL, SIZE, Surface, hash};
 use crate::world::Axis;
 
 /// Blocks along each side of a grid cell holding one tree candidate.
 const CELL: i32 = 4;
 /// How far leaves reach from the trunk.
 const CANOPY_RADIUS: i32 = 2;
-/// Trees keep this far from the edge wall.
-const WALL_CLEARANCE: i32 = 3;
+/// Trees keep this far from the world border.
+const BORDER_CLEARANCE: i32 = 3;
 const TRUNK_HEIGHTS: std::ops::RangeInclusive<i32> = 4..=6;
 const TREE_SALT: u32 = 0x632b_e5ab;
 
@@ -54,11 +54,12 @@ impl Tree {
         column: IVec2,
         roll: u32,
         columns: &Neighbourhood,
-        extent: IVec3,
+        extent: Extent,
     ) -> Option<Tree> {
         let (x, z) = (column.x, column.y);
-        let inside_walls = |v: i32, edge: i32| (WALL_CLEARANCE..edge - WALL_CLEARANCE).contains(&v);
-        if !inside_walls(x, extent.x) || !inside_walls(z, extent.z) {
+        let clear_of_border =
+            (-extent.half_width + BORDER_CLEARANCE)..(extent.half_width - BORDER_CLEARANCE);
+        if !clear_of_border.contains(&x) || !clear_of_border.contains(&z) {
             return None;
         }
         let surface = Surface::at(seed, x, z, columns);
@@ -119,7 +120,7 @@ pub(super) fn grow(
     chunk: &mut Chunk,
     origin: IVec3,
     columns: &Neighbourhood,
-    extent: IVec3,
+    extent: Extent,
 ) {
     let first = (origin.xz() - CANOPY_RADIUS).div_euclid(IVec2::splat(CELL));
     let last = (origin.xz() + SIZE - 1 + CANOPY_RADIUS).div_euclid(IVec2::splat(CELL));
@@ -165,24 +166,33 @@ mod tests {
     use super::*;
     use crate::world::World;
 
-    const CHUNKS: IVec3 = IVec3::new(8, HEIGHT / SIZE, 8);
+    const EXTENT: Extent = Extent {
+        half_width: 64,
+        height: HEIGHT,
+    };
+
+    /// The origins of the bottom chunk of every chunk column in `EXTENT`.
+    fn column_origins() -> impl Iterator<Item = IVec3> {
+        EXTENT
+            .chunk_positions()
+            .filter(|chunk| chunk.y == 0)
+            .map(|chunk| chunk * SIZE)
+    }
 
     /// The tree of a grid cell inside the chunk `columns` was built for.
-    fn in_cell(seed: u32, cell: IVec2, columns: &Neighbourhood, extent: IVec3) -> Option<Tree> {
+    fn in_cell(seed: u32, cell: IVec2, columns: &Neighbourhood, extent: Extent) -> Option<Tree> {
         let (column, roll) = candidate(seed, cell);
         Tree::grown(seed, column, roll, columns, extent)
     }
 
-    fn trees(seed: u32, world_chunks: IVec3) -> Vec<Tree> {
-        let extent = world_chunks * SIZE;
-        (0..world_chunks.x)
-            .flat_map(|cx| (0..world_chunks.z).map(move |cz| IVec3::new(cx, 0, cz) * SIZE))
+    fn trees(seed: u32) -> Vec<Tree> {
+        column_origins()
             .flat_map(|origin| {
                 let columns = Neighbourhood::around(seed, origin);
                 let cells = origin.xz() / CELL;
                 (0..SIZE / CELL)
                     .flat_map(|i| (0..SIZE / CELL).map(move |k| IVec2::new(i, k)))
-                    .filter_map(|cell| in_cell(seed, cells + cell, &columns, extent))
+                    .filter_map(|cell| in_cell(seed, cells + cell, &columns, EXTENT))
                     .collect::<Vec<_>>()
             })
             .collect()
@@ -190,8 +200,8 @@ mod tests {
 
     #[test]
     fn trees_across_chunk_borders_are_whole() {
-        let world = generate(CHUNKS, 1);
-        let straddling: Vec<Tree> = trees(1, CHUNKS)
+        let world = generate(EXTENT, 1);
+        let straddling: Vec<Tree> = trees(1)
             .into_iter()
             .filter(|tree| {
                 let local = tree.base.xz().rem_euclid(IVec2::splat(SIZE));
@@ -211,10 +221,10 @@ mod tests {
     }
 
     fn every_block(world: &World) -> impl Iterator<Item = (IVec3, Block)> + '_ {
-        let extent = CHUNKS * SIZE;
-        (0..extent.x).flat_map(move |x| {
-            (0..extent.y).flat_map(move |y| {
-                (0..extent.z).map(move |z| {
+        let (min, max) = (EXTENT.min(), EXTENT.max());
+        (min.x..max.x).flat_map(move |x| {
+            (min.y..max.y).flat_map(move |y| {
+                (min.z..max.z).map(move |z| {
                     let position = IVec3::new(x, y, z);
                     (position, world.block(position))
                 })
@@ -225,7 +235,7 @@ mod tests {
     #[test]
     fn logs_are_upright_trunks_on_dirt_under_leaves() {
         for seed in 0..2 {
-            let world = generate(CHUNKS, seed);
+            let world = generate(EXTENT, seed);
             for (position, block) in every_block(&world) {
                 match block {
                     Block::OakLog(axis) => {
@@ -255,32 +265,28 @@ mod tests {
         let mut forest = (0, 0);
         let mut plains = (0, 0);
         for seed in 0..4 {
-            let extent = CHUNKS * SIZE;
-            for cx in 0..CHUNKS.x {
-                for cz in 0..CHUNKS.z {
-                    let origin = IVec3::new(cx, 0, cz) * SIZE;
-                    let columns = Neighbourhood::around(seed, origin);
-                    for x in origin.x..origin.x + SIZE {
-                        for z in origin.z..origin.z + SIZE {
-                            let tally = match Surface::at(seed, x, z, &columns).biome {
-                                Biome::Forest => &mut forest,
-                                Biome::Plains => &mut plains,
-                                _ => continue,
-                            };
-                            tally.1 += 1;
-                        }
+            for origin in column_origins() {
+                let columns = Neighbourhood::around(seed, origin);
+                for x in origin.x..origin.x + SIZE {
+                    for z in origin.z..origin.z + SIZE {
+                        let tally = match Surface::at(seed, x, z, &columns).biome {
+                            Biome::Forest => &mut forest,
+                            Biome::Plains => &mut plains,
+                            _ => continue,
+                        };
+                        tally.1 += 1;
                     }
-                    let cells = origin.xz() / CELL;
-                    for i in 0..SIZE / CELL {
-                        for k in 0..SIZE / CELL {
-                            let cell = cells + IVec2::new(i, k);
-                            if let Some(tree) = in_cell(seed, cell, &columns, extent) {
-                                let base = tree.base;
-                                match Surface::at(seed, base.x, base.z, &columns).biome {
-                                    Biome::Forest => forest.0 += 1,
-                                    Biome::Plains => plains.0 += 1,
-                                    _ => {}
-                                }
+                }
+                let cells = origin.xz() / CELL;
+                for i in 0..SIZE / CELL {
+                    for k in 0..SIZE / CELL {
+                        let cell = cells + IVec2::new(i, k);
+                        if let Some(tree) = in_cell(seed, cell, &columns, EXTENT) {
+                            let base = tree.base;
+                            match Surface::at(seed, base.x, base.z, &columns).biome {
+                                Biome::Forest => forest.0 += 1,
+                                Biome::Plains => plains.0 += 1,
+                                _ => {}
                             }
                         }
                     }
