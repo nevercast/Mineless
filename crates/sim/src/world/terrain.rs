@@ -7,6 +7,8 @@
 
 use glam::{IVec3, Vec2, Vec3};
 
+mod trees;
+
 use super::chunk::Chunk;
 use super::{Block, CHUNK_SIZE, SIZE, World};
 
@@ -195,6 +197,7 @@ fn generate_chunk(seed: u32, position: IVec3, chunks: IVec3) -> Chunk {
             }
         }
     }
+    trees::grow(seed, &mut chunk, origin, &columns, extent);
     chunk
 }
 
@@ -209,8 +212,8 @@ fn wall_top(columns: &Neighbourhood, x: i32, z: i32, extent: IVec3) -> i32 {
     ground + WALL_ABOVE_GROUND
 }
 
-/// The columns of one chunk and one more all round, with their tops, since the wall and the
-/// cliff test both look at neighbouring columns.
+/// The columns of one chunk and a border round it, with their tops, since the wall, the cliff
+/// test and trees all look at neighbouring columns.
 struct Neighbourhood {
     /// World position of the first column.
     origin: IVec3,
@@ -219,11 +222,11 @@ struct Neighbourhood {
 }
 
 impl Neighbourhood {
-    const ACROSS: i32 = SIZE + 2;
+    const ACROSS: i32 = SIZE + 2 * trees::REACH;
 
     fn around(seed: u32, chunk_origin: IVec3) -> Self {
         let lattice = Lattice::around(seed, chunk_origin);
-        let origin = chunk_origin - IVec3::new(1, 0, 1);
+        let origin = chunk_origin - IVec3::new(trees::REACH, 0, trees::REACH);
         let columns: Vec<Column> = (0..Self::ACROSS)
             .flat_map(|i| (0..Self::ACROSS).map(move |k| (i, k)))
             .map(|(i, k)| lattice.column(origin.x + i, origin.z + k))
@@ -731,11 +734,11 @@ mod tests {
             for z in (1..47).step_by(5) {
                 let lattice =
                     Lattice::around(5, IVec3::new(x, 0, z).div_euclid(IVec3::splat(SIZE)) * SIZE);
-                assert_eq!(
-                    world.column_top(x, z),
-                    lattice.column(x, z).top(),
-                    "{x}, {z}"
-                );
+                let top = lattice.column(x, z).top();
+                if (top..HEIGHT).any(|y| is_tree(world.block(IVec3::new(x, y, z)))) {
+                    continue;
+                }
+                assert_eq!(world.column_top(x, z), top, "{x}, {z}");
             }
         }
     }
@@ -848,6 +851,10 @@ mod tests {
         })
     }
 
+    fn is_tree(block: Block) -> bool {
+        matches!(block, Block::OakLog(_) | Block::OakLeaves)
+    }
+
     fn exposed(world: &World, position: IVec3) -> bool {
         world.block(position) != Block::Air && world.block(position + IVec3::Y) == Block::Air
     }
@@ -930,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn dressing_keeps_the_shape() {
+    fn dressing_and_trees_keep_the_shape() {
         for seed in 0..4 {
             let world = &dressed()[seed as usize];
             let lattice = Lattice::around(seed, IVec3::new(144, 0, 144));
@@ -938,7 +945,8 @@ mod tests {
                 for z in 144..160 {
                     let column = lattice.column(x, z);
                     for y in 0..HEIGHT {
-                        let solid = world.block(IVec3::new(x, y, z)) != Block::Air;
+                        let block = world.block(IVec3::new(x, y, z));
+                        let solid = block != Block::Air && !is_tree(block);
                         assert_eq!(solid, column.solid(y), "{x}, {y}, {z}");
                     }
                 }
