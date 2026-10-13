@@ -173,60 +173,48 @@ fn set_mouse_capture(window: &Window, capture: bool) -> bool {
     grabbed
 }
 
-/// 20x2x20 chunks: 320 blocks square, big enough that render costs show up, and 32 tall, with
-/// walls tall enough to reach the upper chunks.
-const WORLD_CHUNKS: IVec3 = IVec3::new(20, 2, 20);
-const GROUND_HEIGHT: i32 = 8;
-const WALL_HEIGHT: i32 = 20;
+/// 20x6x20 chunks: 320 blocks square, big enough that render costs show up, and 96 tall, room
+/// for the highest mountains.
+const WORLD_CHUNKS: IVec3 = IVec3::new(20, 6, 20);
+/// Fixed for now so every run, and every before-and-after measurement, sees the same world.
+const SEED: u32 = 0;
 
-/// The middle of the whole arena at ground level; the camera starts out looking at it.
-const ARENA_MIDDLE: Vec3 = vec3(
-    (WORLD_CHUNKS.x * world::CHUNK_SIZE as i32 / 2) as f32,
-    GROUND_HEIGHT as f32,
-    (WORLD_CHUNKS.z * world::CHUNK_SIZE as i32 / 2) as f32,
-);
+/// The top of the ground at the centre of a column, where a player can stand.
+fn ground_at(x: i32, z: i32) -> Vec3 {
+    let height = world::terrain::surface_height(SEED, x, z);
+    vec3(x as f32 + 0.5, height as f32, z as f32 + 0.5)
+}
 
 const MAX_CATCH_UP: f32 = 0.25;
 
 /// The world starts mid-morning.
 const START_TICKS: u64 = DAY_TICKS * 3 / 8;
 
-/// Four players near the middle of the first arena tile, one in each skin: one dropped from twelve
-/// blocks up and one on the ground, both standing idle, and two walkers, one of which starts by
-/// walking into the centre pit and jumping out, looking down and to its right. Every other tile
-/// gets a walker of its own, so ticks have a crowd to simulate.
+/// Blocks between neighbouring players in the starting grid.
+const PLAYER_SPACING: i32 = 64;
+
+/// A player every `PLAYER_SPACING` blocks across the world, skins in turn, so ticks have a crowd
+/// to simulate. The first stands idle, the second drops from twelve blocks up and then stands
+/// idle too, and the rest walk.
 fn test_players() -> Vec<Player> {
-    let ground = GROUND_HEIGHT as f32;
-    let dropped = Player::new(
-        vec3(37.5, ground + 12.0, 27.5),
-        -135f32.to_radians(),
-        Skin::Player,
-    );
-    let idler = Player::new(vec3(35.5, ground, 31.5), -135f32.to_radians(), Skin::Autumn);
-    let mut walker = Player::new(vec3(39.5, ground, 25.5), 123f32.to_radians(), Skin::CyberA);
-    walker.controls.head_yaw = -0.35;
-    walker.controls.head_pitch = -0.3;
-    walker.controls.walk = Vec2::Y;
-    let mut stroller = Player::new(vec3(30.5, ground, 38.5), -100f32.to_radians(), Skin::CyberB);
-    stroller.controls.walk = Vec2::Y;
-    let mut players = vec![dropped, idler, walker, stroller];
-    let tiles =
-        IVec2::new(WORLD_CHUNKS.x, WORLD_CHUNKS.z) * world::CHUNK_SIZE as i32 / world::arena::TILE;
-    for (index, tile) in (0..tiles.x)
-        .flat_map(|x| (0..tiles.y).map(move |z| IVec2::new(x, z)))
-        .skip(1)
+    let across = WORLD_CHUNKS * world::CHUNK_SIZE as i32 / PLAYER_SPACING;
+    (0..across.x)
+        .flat_map(|x| (0..across.z).map(move |z| IVec2::new(x, z)))
         .enumerate()
-    {
-        let offset = (tile * world::arena::TILE).as_vec2();
-        let mut crowd = Player::new(
-            vec3(offset.x + 39.5, ground, offset.y + 25.5),
-            123f32.to_radians(),
-            Skin::ALL[index % Skin::ALL.len()],
-        );
-        crowd.controls.walk = Vec2::Y;
-        players.push(crowd);
-    }
-    players
+        .map(|(index, cell)| {
+            let column = cell * PLAYER_SPACING + PLAYER_SPACING / 2;
+            let mut position = ground_at(column.x, column.y);
+            if index == 1 {
+                position.y += 12.0;
+            }
+            let yaw = (index as f32 * 123.0).to_radians();
+            let mut player = Player::new(position, yaw, Skin::ALL[index % Skin::ALL.len()]);
+            if index > 1 {
+                player.controls.walk = Vec2::Y;
+            }
+            player
+        })
+        .collect()
 }
 
 /// Stand-in agent: drives a player only through its controls, as a real agent will. Walkers walk
@@ -279,14 +267,14 @@ fn main() {
     env_logger::init();
     let event_loop = EventLoop::new().expect("create event loop");
     let mut app = App {
-        world: world::arena::generate(WORLD_CHUNKS, GROUND_HEIGHT, WALL_HEIGHT),
+        world: world::terrain::generate(WORLD_CHUNKS, SEED),
         players: test_players(),
         ticks: START_TICKS,
         unsimulated: 0.0,
         window: None,
         renderer: None,
-        // Over the first tile's corner, looking across the whole arena.
-        camera: Camera::looking_at(vec3(10.0, 45.0, 10.0), ARENA_MIDDLE),
+        // Over the plains, looking up at the mountain range in the middle of the seed's world.
+        camera: Camera::looking_at(vec3(245.0, 80.0, 240.0), vec3(165.0, 45.0, 165.0)),
         spectator: Spectator::default(),
         mouse_captured: false,
         last_frame: Instant::now(),
@@ -300,14 +288,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wanderer_stays_inside_the_arena_walls() {
-        let world = world::arena::generate(WORLD_CHUNKS, GROUND_HEIGHT, WALL_HEIGHT);
+    fn wanderer_stays_inside_the_world_walls() {
+        let world = world::terrain::generate(WORLD_CHUNKS, SEED);
         let mut players = test_players();
         let inside = (WORLD_CHUNKS * world::CHUNK_SIZE as i32).as_vec3() - 1.0;
+        let camera = ground_at(160, 160);
         // An hour of simulation.
         for _ in 0..(3600.0 * TICK_RATE) as u32 {
             for player in &mut players {
-                wander(player, &world, ARENA_MIDDLE);
+                wander(player, &world, camera);
                 let position = player.avatar(1.0).position;
                 assert!(position.x > 1.0 && position.z > 1.0, "{position}");
                 assert!(position.x < inside.x && position.z < inside.z, "{position}");

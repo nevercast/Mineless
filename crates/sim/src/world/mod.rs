@@ -1,5 +1,5 @@
-pub mod arena;
 mod chunk;
+pub mod terrain;
 
 use std::collections::HashMap;
 
