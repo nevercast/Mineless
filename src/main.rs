@@ -176,8 +176,9 @@ fn set_mouse_capture(window: &Window, capture: bool) -> bool {
 /// 20x8x20 chunks: 320 blocks square, big enough that render costs show up, and 128 tall, room
 /// for the highest mountains.
 const WORLD_CHUNKS: IVec3 = IVec3::new(20, 8, 20);
-/// Fixed for now so every run, and every before-and-after measurement, sees the same world.
-const SEED: u32 = 0;
+/// Fixed for now so every run, and every before-and-after measurement, sees the same world. This
+/// one shows sea, beach, uplands, forest and a floating lump from the start view.
+const SEED: u32 = 142;
 
 /// The top of the ground at the centre of a column, where a player can stand.
 fn ground_at(world: &World, x: i32, z: i32) -> Vec3 {
@@ -277,8 +278,8 @@ fn main() {
         unsimulated: 0.0,
         window: None,
         renderer: None,
-        // Over the plains, looking at the escarpment where the eastern upland rises out of them.
-        camera: Camera::looking_at(vec3(190.0, 72.0, 110.0), vec3(280.0, 68.0, 95.0)),
+        // From the eastern plains across the bay to the island upland, its beaches and the forest.
+        camera: Camera::looking_at(vec3(235.0, 64.0, 235.0), vec3(140.0, 58.0, 150.0)),
         spectator: Spectator::default(),
         mouse_captured: false,
         last_frame: Instant::now(),

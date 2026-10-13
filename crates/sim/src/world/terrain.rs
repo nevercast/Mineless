@@ -672,6 +672,7 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::IVec2;
 
     const CHUNKS: IVec3 = IVec3::new(3, HEIGHT / SIZE, 3);
 
@@ -1028,6 +1029,105 @@ mod tests {
             }
         }
         assert!(water > 0);
+    }
+
+    /// The surfaces of every column in the chunk columns from `first` to `last`, inclusive.
+    fn surfaces(seed: u32, first: IVec2, last: IVec2) -> Vec<(Surface, Column)> {
+        let mut found = Vec::new();
+        for cx in first.x..=last.x {
+            for cz in first.y..=last.y {
+                let origin = IVec3::new(cx, 0, cz) * SIZE;
+                let columns = Neighbourhood::around(seed, origin);
+                for x in origin.x..origin.x + SIZE {
+                    for z in origin.z..origin.z + SIZE {
+                        let column = columns.column(x, z);
+                        let column = Column {
+                            levels: column.levels,
+                            relief: column.relief,
+                        };
+                        found.push((Surface::at(seed, x, z, &columns), column));
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    /// The seeds picked to show each kind of terrain, and the cheap part of why each was picked,
+    /// so retuning generation can't quietly lose them.
+    #[test]
+    fn showcase_seeds_still_show_what_they_were_picked_for() {
+        const EXTREME_HILLS: u32 = 149;
+        const FOREST: u32 = 242;
+        const BEACH_AND_FLOATING: u32 = 108;
+
+        let share = |found: &[(Surface, Column)], biome: Biome| {
+            found
+                .iter()
+                .filter(|(surface, _)| surface.biome == biome)
+                .count() as f32
+                / found.len() as f32
+        };
+
+        let hills = surfaces(EXTREME_HILLS, IVec2::new(1, 1), IVec2::new(8, 8));
+        assert!(share(&hills, Biome::Hills) > 0.6);
+        let overhung = hills
+            .iter()
+            .filter(|(surface, column)| (1..surface.top).any(|y| !column.solid(y)))
+            .count();
+        assert!(overhung > 500, "{overhung}");
+
+        let forest = surfaces(FOREST, IVec2::new(2, 2), IVec2::new(9, 9));
+        assert!(share(&forest, Biome::Forest) > 0.8);
+
+        let coast = surfaces(BEACH_AND_FLOATING, IVec2::new(8, 9), IVec2::new(19, 14));
+        let sand = coast
+            .iter()
+            .filter(|(surface, column)| {
+                surface.biome == Biome::Beach
+                    && surface.block(column, surface.top - 1) == Block::Sand
+            })
+            .count();
+        assert!(sand > 1000, "{sand}");
+
+        // A lump of land floating over the island at about (195, 90, 87): the solid cells
+        // joined to it never reach the edges of a box drawn round it, so nothing holds it up.
+        let world_chunks = IVec3::new(20, HEIGHT / SIZE, 20);
+        let mut world = World::default();
+        let (low, high) = (IVec3::new(11, 4, 4), IVec3::new(13, 6, 6));
+        for cx in low.x..=high.x {
+            for cy in low.y..=high.y {
+                for cz in low.z..=high.z {
+                    let position = IVec3::new(cx, cy, cz);
+                    let chunk = generate_chunk(BEACH_AND_FLOATING, position, world_chunks);
+                    world.insert(position, chunk);
+                }
+            }
+        }
+        let (min, max) = (low * SIZE, (high + 1) * SIZE - 1);
+        let start = IVec3::new(195, 90, 87);
+        assert!(world.block(start).is_solid());
+        let mut reached = std::collections::HashSet::from([start]);
+        let mut frontier = vec![start];
+        while let Some(position) = frontier.pop() {
+            assert!(
+                position.cmpgt(min).all() && position.cmplt(max).all(),
+                "the lump reaches {position}"
+            );
+            for step in [
+                IVec3::X,
+                IVec3::NEG_X,
+                IVec3::Y,
+                IVec3::NEG_Y,
+                IVec3::Z,
+                IVec3::NEG_Z,
+            ] {
+                let next = position + step;
+                if world.block(next).is_solid() && reached.insert(next) {
+                    frontier.push(next);
+                }
+            }
+        }
     }
 
     #[test]
