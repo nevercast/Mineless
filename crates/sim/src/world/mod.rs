@@ -10,6 +10,51 @@ pub use chunk::{Axis, Block, CHUNK_SIZE};
 
 const SIZE: i32 = CHUNK_SIZE as i32;
 
+/// How far the world reaches: `-half_width..half_width` in x and z, centred on the origin, and
+/// `0..height` upwards. Its outermost columns are the world border.
+#[derive(Clone, Copy, Debug)]
+pub struct Extent {
+    pub half_width: i32,
+    pub height: i32,
+}
+
+impl Extent {
+    /// The lowest block corner, inclusive.
+    pub fn min(self) -> IVec3 {
+        IVec3::new(-self.half_width, 0, -self.half_width)
+    }
+
+    /// The highest block corner, exclusive.
+    pub fn max(self) -> IVec3 {
+        IVec3::new(self.half_width, self.height, self.half_width)
+    }
+
+    pub fn contains(self, position: IVec3) -> bool {
+        position.cmpge(self.min()).all() && position.cmplt(self.max()).all()
+    }
+
+    pub fn contains_column(self, x: i32, z: i32) -> bool {
+        self.contains(IVec3::new(x, 0, z))
+    }
+
+    /// Whether the column is in the outermost ring, where the border stands.
+    pub fn on_edge(self, x: i32, z: i32) -> bool {
+        let (low, high) = (-self.half_width, self.half_width - 1);
+        self.contains_column(x, z) && (x == low || z == low || x == high || z == high)
+    }
+
+    /// Every chunk holding at least one block of the world. The outermost ones stick out past
+    /// it when the half-width isn't a whole number of chunks.
+    pub fn chunk_positions(self) -> impl Iterator<Item = IVec3> {
+        let first = self.min().div_euclid(IVec3::splat(SIZE));
+        let last = (self.max() - 1).div_euclid(IVec3::splat(SIZE));
+        (first.x..=last.x).flat_map(move |x| {
+            (first.y..=last.y)
+                .flat_map(move |y| (first.z..=last.z).map(move |z| IVec3::new(x, y, z)))
+        })
+    }
+}
+
 /// All loaded chunks, keyed by chunk coordinate (world block position divided by `CHUNK_SIZE`).
 #[derive(Default)]
 pub struct World {
@@ -74,4 +119,52 @@ fn split(position: IVec3) -> (IVec3, glam::USizeVec3) {
     let chunk = position.div_euclid(IVec3::splat(SIZE));
     let local = position.rem_euclid(IVec3::splat(SIZE));
     (chunk, local.as_usizevec3())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blocks_read_back_on_both_sides_of_the_origin() {
+        let extent = Extent {
+            half_width: 32,
+            height: 2 * SIZE,
+        };
+        let mut world = World::default();
+        for position in extent.chunk_positions() {
+            world.insert(position, Chunk::empty());
+        }
+        let placed = [
+            (IVec3::new(-1, 5, -1), Block::Stone),
+            (IVec3::new(0, 6, 0), Block::Dirt),
+            (IVec3::new(-17, 20, 15), Block::Sand),
+            (IVec3::new(-32, 0, 31), Block::Gravel),
+        ];
+        for (position, block) in placed {
+            world.set_block(position, block);
+        }
+        for (position, block) in placed {
+            assert_eq!(world.block(position), block, "{position}");
+            assert_eq!(world.column_top(position.x, position.z), position.y + 1);
+        }
+        assert_eq!(world.block(IVec3::new(-1, 5, 0)), Block::Air);
+        assert_eq!(world.block(IVec3::new(0, 5, -1)), Block::Air);
+        assert_eq!(world.column_top(-2, -2), 0);
+    }
+
+    #[test]
+    fn extent_chunks_cover_the_world_and_no_more() {
+        let extent = Extent {
+            half_width: 24,
+            height: 3 * SIZE,
+        };
+        let chunks: Vec<IVec3> = extent.chunk_positions().collect();
+        assert_eq!(chunks.len(), 4 * 3 * 4);
+        let low = chunks.iter().fold(IVec3::MAX, |a, &b| a.min(b));
+        let high = chunks.iter().fold(IVec3::MIN, |a, &b| a.max(b));
+        assert_eq!((low, high), (IVec3::new(-2, 0, -2), IVec3::new(1, 2, 1)));
+        assert!(extent.on_edge(-24, 0) && extent.on_edge(5, 23));
+        assert!(!extent.on_edge(-23, 0) && !extent.on_edge(-25, 0) && !extent.on_edge(24, 0));
+    }
 }

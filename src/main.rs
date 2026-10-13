@@ -14,11 +14,11 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use glam::{IVec2, IVec3, Vec2, Vec3, vec3};
+use glam::{IVec2, Vec2, Vec3, vec3};
 use render::{Camera, Renderer};
 use sim::avatar::{Avatar, Skin};
 use sim::player::{JUMP_HEIGHTS, Player, TICK_RATE};
-use sim::world::{self, World};
+use sim::world::{self, Extent, World};
 use sky::{DAY_TICKS, Sky};
 use spectator::Spectator;
 
@@ -74,10 +74,7 @@ impl ApplicationHandler for App {
         let attributes =
             Window::default_attributes().with_title(format!("Mineless | seed {}", self.seed));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
-        let mut renderer = pollster::block_on(Renderer::new(
-            window.clone(),
-            (WORLD_CHUNKS * world::CHUNK_SIZE as i32).as_vec3(),
-        ));
+        let mut renderer = pollster::block_on(Renderer::new(window.clone(), WORLD));
         for chunk in self.world.chunk_positions() {
             renderer.upload_chunk_mesh(chunk, &mesher::build_chunk_mesh(&self.world, chunk));
         }
@@ -179,9 +176,12 @@ fn set_mouse_capture(window: &Window, capture: bool) -> bool {
     grabbed
 }
 
-/// 20x8x20 chunks: 320 blocks square, big enough that render costs show up, and 128 tall, room
-/// for the highest mountains.
-const WORLD_CHUNKS: IVec3 = IVec3::new(20, 8, 20);
+/// 320 blocks square, big enough that render costs show up, and 160 tall, which leaves room to
+/// build above the highest mountains.
+const WORLD: Extent = Extent {
+    half_width: 160,
+    height: 160,
+};
 /// The world unless `--seed` picks another. This one shows sea, beach, uplands, forest and a
 /// floating lump from the start view.
 const SEED: u32 = 142;
@@ -205,10 +205,10 @@ fn parse_seed(mut args: impl Iterator<Item = String>) -> Result<u32, String> {
     Ok(seed)
 }
 
-/// The start view looks from the eastern plains across the bay to the island upland, framed for
+/// The start view looks over the forest past a snowy upland and an arch to the sea, framed for
 /// seed 142.
-const START_POSITION: Vec3 = vec3(235.0, 64.0, 235.0);
-const START_TARGET: Vec3 = vec3(140.0, 58.0, 150.0);
+const START_POSITION: Vec3 = vec3(95.0, 74.0, 65.0);
+const START_TARGET: Vec3 = vec3(-30.0, 56.0, -75.0);
 /// Blocks the start camera keeps above the ground beneath it.
 const START_CLEARANCE: f32 = 4.0;
 
@@ -240,12 +240,12 @@ const PLAYER_SPACING: i32 = 64;
 /// to simulate. The first stands idle, the second drops from twelve blocks up and then stands
 /// idle too, and the rest walk.
 fn test_players(world: &World) -> Vec<Player> {
-    let across = WORLD_CHUNKS * world::CHUNK_SIZE as i32 / PLAYER_SPACING;
-    (0..across.x)
-        .flat_map(|x| (0..across.z).map(move |z| IVec2::new(x, z)))
+    let across = 2 * WORLD.half_width / PLAYER_SPACING;
+    (0..across)
+        .flat_map(|x| (0..across).map(move |z| IVec2::new(x, z)))
         .enumerate()
         .map(|(index, cell)| {
-            let column = cell * PLAYER_SPACING + PLAYER_SPACING / 2;
+            let column = cell * PLAYER_SPACING + PLAYER_SPACING / 2 - WORLD.half_width;
             let mut position = ground_at(world, column.x, column.y);
             if index == 1 {
                 position.y += 12.0;
@@ -313,7 +313,7 @@ fn main() {
         std::process::exit(2);
     });
     let event_loop = EventLoop::new().expect("create event loop");
-    let world = world::terrain::generate(WORLD_CHUNKS, seed);
+    let world = world::terrain::generate(WORLD, seed);
     let mut app = App {
         players: test_players(&world),
         camera: start_camera(world.column_top(START_POSITION.x as i32, START_POSITION.z as i32)),
@@ -375,17 +375,17 @@ mod tests {
 
     #[test]
     fn wanderer_stays_inside_the_world_border() {
-        let world = world::terrain::generate(WORLD_CHUNKS, SEED);
+        let world = world::terrain::generate(WORLD, SEED);
         let mut players = test_players(&world);
-        let inside = (WORLD_CHUNKS * world::CHUNK_SIZE as i32).as_vec3() - 1.0;
-        let camera = ground_at(&world, 160, 160);
+        let (low, high) = (WORLD.min().as_vec3() + 1.0, WORLD.max().as_vec3() - 1.0);
+        let camera = ground_at(&world, 0, 0);
         // An hour of simulation.
         for _ in 0..(3600.0 * TICK_RATE) as u32 {
             for player in &mut players {
                 wander(player, &world, camera);
                 let position = player.avatar(1.0).position;
-                assert!(position.x > 1.0 && position.z > 1.0, "{position}");
-                assert!(position.x < inside.x && position.z < inside.z, "{position}");
+                assert!(position.x > low.x && position.z > low.z, "{position}");
+                assert!(position.x < high.x && position.z < high.z, "{position}");
             }
         }
     }
