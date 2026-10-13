@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 
 use glam::IVec3;
 
-use sim::world::{Block, CHUNK_SIZE, World};
+use sim::world::{Axis, Block, CHUNK_SIZE, World};
 
 /// One corner of a block face packed into 32 bits, unpacked in shader.wgsl. From the low bits:
 /// position in the chunk (5 bits each for x, y, z, since corners reach 16), index into `FACES`
@@ -35,28 +35,68 @@ pub enum Tile {
     Dirt,
     Stone,
     Cobblestone,
+    Sand,
+    Gravel,
+    Snow,
+    OakLog,
+    OakLogTop,
+    OakLeaves,
 }
 
 impl Tile {
-    pub const ALL: [Tile; 5] = [
+    pub const ALL: [Tile; 11] = [
         Tile::GrassTop,
         Tile::GrassSide,
         Tile::Dirt,
         Tile::Stone,
         Tile::Cobblestone,
+        Tile::Sand,
+        Tile::Gravel,
+        Tile::Snow,
+        Tile::OakLog,
+        Tile::OakLogTop,
+        Tile::OakLeaves,
     ];
 
-    /// The tile for one face of a block; `normal_y` picks top or bottom faces.
-    fn for_face(block: Block, normal_y: i32) -> Tile {
-        match (block, normal_y) {
-            (Block::Grass, 1) => Tile::GrassTop,
-            (Block::Grass, -1) => Tile::Dirt,
-            (Block::Grass, _) => Tile::GrassSide,
-            (Block::Dirt, _) => Tile::Dirt,
-            (Block::Stone, _) => Tile::Stone,
-            (Block::Cobblestone, _) => Tile::Cobblestone,
-            (Block::Air, _) => unreachable!("air has no faces"),
+    /// The tile for the face of `block` facing `normal`.
+    fn for_face(block: Block, normal: IVec3) -> Tile {
+        match block {
+            Block::Grass => match normal.y {
+                1 => Tile::GrassTop,
+                -1 => Tile::Dirt,
+                _ => Tile::GrassSide,
+            },
+            Block::Dirt => Tile::Dirt,
+            Block::Stone => Tile::Stone,
+            Block::Cobblestone => Tile::Cobblestone,
+            Block::Sand => Tile::Sand,
+            Block::Gravel => Tile::Gravel,
+            Block::Snow => Tile::Snow,
+            Block::OakLog(axis) if along(axis, normal) => Tile::OakLogTop,
+            Block::OakLog(_) => Tile::OakLog,
+            Block::OakLeaves => Tile::OakLeaves,
+            Block::Air => unreachable!("air has no faces"),
         }
+    }
+}
+
+fn along(axis: Axis, normal: IVec3) -> bool {
+    let component = match axis {
+        Axis::X => normal.x,
+        Axis::Y => normal.y,
+        Axis::Z => normal.z,
+    };
+    component != 0
+}
+
+/// Whether the face of `block` facing `normal` shows its texture a quarter turn round. Bark grain
+/// runs up the texture, and `FACES` puts texture up along world Y on side faces and world Z on
+/// top and bottom faces, so wherever that isn't the log's axis the bark has to turn.
+fn quarter_turned(block: Block, normal: IVec3) -> bool {
+    match block {
+        Block::OakLog(Axis::X) => normal.x == 0,
+        Block::OakLog(Axis::Z) => normal.x != 0,
+        _ => false,
     }
 }
 
@@ -137,9 +177,10 @@ pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> Mesh {
                 }
                 for (index, face) in FACES.iter().enumerate() {
                     if blocks.block(position + face.normal) == Block::Air {
-                        let tile = Tile::for_face(block, face.normal.y);
+                        let tile = Tile::for_face(block, face.normal);
+                        let turned = quarter_turned(block, face.normal);
                         let occlusion = face_occlusion(&blocks, position, face);
-                        push_face(&mut mesh, index, local, tile, occlusion);
+                        push_face(&mut mesh, index, local, tile, turned, occlusion);
                     }
                 }
             }
@@ -172,14 +213,23 @@ fn face_occlusion(blocks: &Snapshot, position: IVec3, face: &Face) -> [usize; 4]
     })
 }
 
-/// `local` is the block's position inside its chunk.
-fn push_face(mesh: &mut Mesh, face: usize, local: IVec3, tile: Tile, occlusion: [usize; 4]) {
+/// `local` is the block's position inside its chunk. A `turned` face gives each corner the next
+/// corner's texture coordinates, which turns the texture without touching positions or AO.
+fn push_face(
+    mesh: &mut Mesh,
+    face: usize,
+    local: IVec3,
+    tile: Tile,
+    turned: bool,
+    occlusion: [usize; 4],
+) {
     let base = u16::try_from(mesh.vertices.len()).expect("a chunk has at most 49,152 vertices");
     for (corner_index, (corner, occluders)) in FACES[face].corners.iter().zip(occlusion).enumerate()
     {
         let position = local + IVec3::from_array(*corner);
+        let texture_corner = (corner_index + usize::from(turned)) % 4;
         mesh.vertices
-            .push(Vertex::new(position, face, corner_index, occluders, tile));
+            .push(Vertex::new(position, face, texture_corner, occluders, tile));
     }
     // Split the quad along the diagonal whose ends are equally lit, otherwise the darkness
     // interpolates across the wrong triangle and shows a visible crease.
@@ -206,6 +256,77 @@ mod tests {
         assert_eq!([field(0, 5), field(5, 5), field(10, 5)], [16, 3, 9]);
         assert_eq!([field(15, 3), field(18, 2), field(20, 2)], [5, 3, 2]);
         assert_eq!(packed >> 22, Tile::Cobblestone as u32);
+    }
+
+    fn texture_corners(mesh: &Mesh) -> Vec<u32> {
+        mesh.vertices
+            .iter()
+            .map(|Vertex(v)| (v >> 18) & 3)
+            .collect()
+    }
+
+    #[test]
+    fn new_blocks_map_to_their_tiles_on_every_face() {
+        let single = [
+            (Block::Sand, Tile::Sand),
+            (Block::Gravel, Tile::Gravel),
+            (Block::Snow, Tile::Snow),
+            (Block::OakLeaves, Tile::OakLeaves),
+        ];
+        for face in &FACES {
+            for (block, tile) in single {
+                assert_eq!(Tile::for_face(block, face.normal), tile, "{block:?}");
+            }
+        }
+        for (axis, ends) in [
+            (Axis::X, IVec3::X),
+            (Axis::Y, IVec3::Y),
+            (Axis::Z, IVec3::Z),
+        ] {
+            for face in &FACES {
+                let expected = if face.normal.abs() == ends {
+                    Tile::OakLogTop
+                } else {
+                    Tile::OakLog
+                };
+                assert_eq!(
+                    Tile::for_face(Block::OakLog(axis), face.normal),
+                    expected,
+                    "{axis:?} log facing {}",
+                    face.normal
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bark_turns_on_exactly_the_faces_across_the_grain() {
+        let turned_faces = [
+            (
+                Axis::X,
+                vec![IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z],
+            ),
+            (Axis::Y, vec![]),
+            (Axis::Z, vec![IVec3::X, IVec3::NEG_X]),
+        ];
+        for (axis, turned) in turned_faces {
+            let mut world = World::empty(IVec3::ONE);
+            world.set_block(IVec3::new(3, 3, 3), Block::OakLog(axis));
+            let corners = texture_corners(&build_chunk_mesh(&world, IVec3::ZERO));
+            for (index, face) in FACES.iter().enumerate() {
+                let expected: Vec<u32> = if turned.contains(&face.normal) {
+                    vec![1, 2, 3, 0]
+                } else {
+                    vec![0, 1, 2, 3]
+                };
+                assert_eq!(
+                    corners[index * 4..index * 4 + 4],
+                    expected,
+                    "{axis:?} log facing {}",
+                    face.normal
+                );
+            }
+        }
     }
 
     #[test]

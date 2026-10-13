@@ -11,6 +11,19 @@ pub enum Block {
     Dirt,
     Stone,
     Cobblestone,
+    Sand,
+    Gravel,
+    Snow,
+    OakLog(Axis),
+    OakLeaves,
+}
+
+/// The world axis a log's grain runs along: `Y` for an upright trunk.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Axis {
+    X,
+    Y,
+    Z,
 }
 
 /// A fixed-size cube of blocks addressed by local coordinates in `0..CHUNK_SIZE`.
@@ -38,4 +51,14 @@ impl Chunk {
 fn index(x: usize, y: usize, z: usize) -> usize {
     debug_assert!(x < CHUNK_SIZE && y < CHUNK_SIZE && z < CHUNK_SIZE);
     (y * CHUNK_SIZE + z) * CHUNK_SIZE + x
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blocks_stay_small() {
+        assert!(size_of::<Block>() <= 2);
+    }
 }

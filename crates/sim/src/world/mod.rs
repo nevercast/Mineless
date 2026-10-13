@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use glam::IVec3;
 
 use chunk::Chunk;
-pub use chunk::{Block, CHUNK_SIZE};
+pub use chunk::{Axis, Block, CHUNK_SIZE};
 
 const SIZE: i32 = CHUNK_SIZE as i32;
 

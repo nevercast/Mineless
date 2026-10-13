@@ -7,6 +7,11 @@ const TILE_SIZE: u32 = 32;
 
 /// Fixed plains-biome tint for the greyscale grass top until biomes exist.
 const GRASS_TINT: [u8; 3] = [0x91, 0xBD, 0x59];
+/// Fixed tint for the greyscale leaves, a darker green than the grass so trees stand out on it.
+const FOLIAGE_TINT: [u8; 3] = [0x6A, 0xA8, 0x3C];
+/// Fills the holes in the leaf texture, so leaf cubes read as dense foliage until leaves are cut
+/// out properly.
+const FOLIAGE_SHADOW: [u8; 3] = [0x1E, 0x3A, 0x12];
 
 /// Every block tile as one layer of a single texture array, with a full mip chain so distant
 /// blocks don't shimmer. An array rather than an atlas keeps mips from bleeding between tiles.
@@ -90,6 +95,12 @@ fn tile_image(tile: Tile) -> RgbaImage {
         Tile::Dirt => include_bytes!("../../textures/block/dirt.png"),
         Tile::Stone => include_bytes!("../../textures/block/stone.png"),
         Tile::Cobblestone => include_bytes!("../../textures/block/cobblestone.png"),
+        Tile::Sand => include_bytes!("../../textures/block/sand.png"),
+        Tile::Gravel => include_bytes!("../../textures/block/gravel.png"),
+        Tile::Snow => include_bytes!("../../textures/block/snow.png"),
+        Tile::OakLog => include_bytes!("../../textures/block/oak_log.png"),
+        Tile::OakLogTop => include_bytes!("../../textures/block/oak_log_top.png"),
+        Tile::OakLeaves => include_bytes!("../../textures/block/oak_leaves.png"),
     };
     let mut image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
         .unwrap_or_else(|err| panic!("decode {tile:?} texture: {err}"))
@@ -99,14 +110,31 @@ fn tile_image(tile: Tile) -> RgbaImage {
         (TILE_SIZE, TILE_SIZE),
         "{tile:?} tile size"
     );
-    if tile == Tile::GrassTop {
-        for pixel in image.pixels_mut() {
-            for (channel, tint) in pixel.0.iter_mut().zip(GRASS_TINT) {
-                *channel = (u16::from(*channel) * u16::from(tint) / 255) as u8;
+    match tile {
+        Tile::GrassTop => tint(&mut image, GRASS_TINT),
+        Tile::OakLeaves => {
+            tint(&mut image, FOLIAGE_TINT);
+            for pixel in image.pixels_mut() {
+                let [r, g, b, alpha] = pixel.0;
+                let blend = |leaf: u8, shadow: u8| {
+                    let alpha = u16::from(alpha);
+                    ((u16::from(leaf) * alpha + u16::from(shadow) * (255 - alpha)) / 255) as u8
+                };
+                let [sr, sg, sb] = FOLIAGE_SHADOW;
+                pixel.0 = [blend(r, sr), blend(g, sg), blend(b, sb), 255];
             }
         }
+        _ => {}
     }
     image
+}
+
+fn tint(image: &mut RgbaImage, tint: [u8; 3]) {
+    for pixel in image.pixels_mut() {
+        for (channel, tint) in pixel.0.iter_mut().zip(tint) {
+            *channel = (u16::from(*channel) * u16::from(tint) / 255) as u8;
+        }
+    }
 }
 
 fn write_layer(
