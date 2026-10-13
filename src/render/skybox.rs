@@ -1,11 +1,7 @@
 use image::ImageFormat;
 use wgpu::util::DeviceExt;
 
-/// Where each cube face sits in the horizontal-cross image, as (column, row) of a 4x3 grid, in
-/// wgpu's face order: +X, -X, +Y, -Y, +Z, -Z.
-const CROSS_FACES: [(u32, u32); 6] = [(2, 1), (0, 1), (1, 0), (1, 2), (1, 1), (3, 1)];
-
-/// The daytime sky cubemap, drawn behind everything and tinted by the time of day.
+/// The daytime sky panorama, drawn behind everything and tinted by the time of day.
 pub struct Skybox {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
@@ -18,9 +14,11 @@ impl Skybox {
         frame_layout: &wgpu::BindGroupLayout,
         depth_format: wgpu::TextureFormat,
     ) -> Self {
-        let view = load_cubemap(device, queue);
+        let view = load_panorama(device, queue);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("skybox"),
+            // Longitude wraps round; latitude stops at the poles.
+            address_mode_u: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
@@ -33,7 +31,7 @@ impl Skybox {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
                     count: None,
@@ -109,48 +107,33 @@ impl Skybox {
     }
 }
 
-/// Cuts the six faces out of the horizontal-cross image into a cube texture.
-fn load_cubemap(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
-    let cross = image::load_from_memory_with_format(
+/// Uploads the equirectangular panorama: longitude across, latitude down.
+fn load_panorama(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let panorama = image::load_from_memory_with_format(
         include_bytes!("../../textures/sky/day.png"),
         ImageFormat::Png,
     )
     .expect("the skybox is a PNG embedded at build time")
     .to_rgba8();
-    let face_size = cross.width() / 4;
-    assert_eq!(cross.height(), face_size * 3, "skybox is a 4x3 cross");
-    let mut texels = Vec::new();
-    for (column, row) in CROSS_FACES {
-        let face = image::imageops::crop_imm(
-            &cross,
-            column * face_size,
-            row * face_size,
-            face_size,
-            face_size,
-        );
-        texels.extend_from_slice(&face.to_image());
-    }
-    let texture = device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("skybox"),
-            size: wgpu::Extent3d {
-                width: face_size,
-                height: face_size,
-                depth_or_array_layers: 6,
+    device
+        .create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("skybox"),
+                size: wgpu::Extent3d {
+                    width: panorama.width(),
+                    height: panorama.height(),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        &texels,
-    );
-    texture.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::Cube),
-        ..Default::default()
-    })
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &panorama,
+        )
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }
