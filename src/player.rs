@@ -1,7 +1,7 @@
-//! A player in the simulation: a collision body that walks where it's told, stepped at a fixed
-//! tick and drawn as an avatar interpolated between ticks.
+//! A player in the simulation: a collision body driven only through its `Controls`, stepped at a
+//! fixed tick and drawn as an avatar interpolated between ticks.
 
-use glam::{BVec3, Vec3};
+use glam::{BVec3, Vec2, Vec3};
 
 use crate::avatar::{Avatar, Pose};
 use crate::physics::Body;
@@ -22,18 +22,28 @@ const AIR_DRAG: f32 = 0.98;
 /// Jump heights a player can choose from, in blocks. Minecraft's own jump peaks at about 1.25.
 pub const JUMP_HEIGHTS: std::ops::RangeInclusive<f32> = 0.5..=1.25;
 
-pub struct Player {
-    pub body: Body,
+/// Everything whoever drives a player can ask of it. Read at the start of every tick.
+#[derive(Clone, Copy, Default)]
+pub struct Controls {
     /// Radians around +Y the body faces; zero faces -Z.
     pub yaw: f32,
+    /// Where the head looks, relative to the body: radians to the left, and radians above level.
     pub head_yaw: f32,
     pub head_pitch: f32,
-    /// Whether to walk forward this tick.
-    pub walking: bool,
+    /// Walking relative to the facing: `y` forward, `x` to the right. Anything longer than 1 is
+    /// scaled down, so walking diagonally is no faster.
+    pub walk: Vec2,
+    /// Jump to peak this many blocks up, clamped to `JUMP_HEIGHTS`. Taken on the next tick that
+    /// starts on the ground, and dropped otherwise.
+    pub jump: Option<f32>,
+}
+
+pub struct Player {
+    pub controls: Controls,
+    body: Body,
     /// Vertical speed in blocks per tick; up is positive.
-    pub fall_velocity: f32,
-    /// Whether the last tick ended standing on a block.
-    pub on_ground: bool,
+    fall_velocity: f32,
+    on_ground: bool,
     swing: f32,
     swing_phase: f32,
     /// Position and limb animation at the start of the current tick, to interpolate from.
@@ -43,15 +53,15 @@ pub struct Player {
 impl Player {
     pub fn new(feet: Vec3, yaw: f32) -> Self {
         Self {
+            controls: Controls {
+                yaw,
+                ..Default::default()
+            },
             body: Body {
                 position: feet,
                 half_width: 0.3,
                 height: 1.8,
             },
-            yaw,
-            head_yaw: 0.0,
-            head_pitch: 0.0,
-            walking: false,
             fall_velocity: 0.0,
             on_ground: false,
             swing: 0.0,
@@ -60,29 +70,32 @@ impl Player {
         }
     }
 
-    /// Leaps off the ground to peak `height` blocks higher, clamped to `JUMP_HEIGHTS`. Does
-    /// nothing in the air; returns whether the jump happened.
-    pub fn jump(&mut self, height: f32) -> bool {
-        if !self.on_ground {
-            return false;
-        }
-        self.fall_velocity =
-            launch_velocity(height.clamp(*JUMP_HEIGHTS.start(), *JUMP_HEIGHTS.end()));
-        self.on_ground = false;
-        true
+    /// Whether the last tick ended standing on a block.
+    pub fn is_on_ground(&self) -> bool {
+        self.on_ground
+    }
+
+    /// Vertical speed in blocks per tick; up is positive.
+    pub fn vertical_velocity(&self) -> f32 {
+        self.fall_velocity
     }
 
     /// Advances one tick. Returns which axes collision cut short.
     pub fn tick(&mut self, world: &World) -> BVec3 {
         self.previous = (self.body.position, self.swing, self.swing_phase);
-        let (sin, cos) = self.yaw.sin_cos();
+        let controls = self.controls;
+        if let Some(height) = self.controls.jump.take()
+            && self.on_ground
+        {
+            self.fall_velocity =
+                launch_velocity(height.clamp(*JUMP_HEIGHTS.start(), *JUMP_HEIGHTS.end()));
+        }
+        let (sin, cos) = controls.yaw.sin_cos();
         let forward = Vec3::new(-sin, 0.0, -cos);
-        let walk = if self.walking {
-            forward * WALK_SPEED / TICK_RATE
-        } else {
-            Vec3::ZERO
-        };
-        let step = walk.with_y(self.fall_velocity);
+        let right = Vec3::new(cos, 0.0, -sin);
+        let walk = controls.walk.clamp_length_max(1.0);
+        let step = (forward * walk.y + right * walk.x) * WALK_SPEED / TICK_RATE;
+        let step = step.with_y(self.fall_velocity);
         let blocked = self.body.move_and_collide(world, step);
         // Like Minecraft, move first and then accelerate, so a body at rest drops a tick later.
         // Gravity applies even on the ground, keeping a standing body pressed onto it.
@@ -101,10 +114,10 @@ impl Player {
         let (position, swing, swing_phase) = self.previous;
         Avatar {
             position: position.lerp(self.body.position, alpha),
-            yaw: self.yaw,
+            yaw: self.controls.yaw,
             pose: Pose {
-                head_yaw: self.head_yaw,
-                head_pitch: self.head_pitch,
+                head_yaw: self.controls.head_yaw,
+                head_pitch: self.controls.head_pitch,
                 swing: swing + (self.swing - swing) * alpha,
                 swing_phase: swing_phase + (self.swing_phase - swing_phase) * alpha,
             },
@@ -194,6 +207,22 @@ mod tests {
     }
 
     #[test]
+    fn walks_at_minecraft_speed_in_any_direction() {
+        let world = floor();
+        for walk in [Vec2::Y, Vec2::X, Vec2::new(1.0, 1.0), Vec2::new(-0.5, 0.0)] {
+            let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0);
+            player.controls.walk = walk;
+            player.tick(&world);
+            let moved = player.body.position - Vec3::new(8.5, 1.0, 8.5);
+            let expected = Vec3::new(walk.x, 0.0, -walk.y).clamp_length_max(1.0);
+            assert!(
+                moved.abs_diff_eq(expected * WALK_SPEED / TICK_RATE, 1e-5),
+                "{walk}"
+            );
+        }
+    }
+
+    #[test]
     fn minecraft_jump_velocity_peaks_at_its_usual_height() {
         assert!((peak_height(0.42) - 1.2522).abs() < 1e-3);
     }
@@ -206,11 +235,13 @@ mod tests {
             while !player.on_ground {
                 player.tick(&world);
             }
-            assert!(player.jump(height));
-            assert!(!player.jump(height), "no jumping again in mid-air");
+            player.controls.jump = Some(height);
             let mut peak: f32 = 0.0;
             while {
                 player.tick(&world);
+                assert_eq!(player.controls.jump, None, "a request is used or dropped");
+                // Asking again in mid-air does nothing.
+                player.controls.jump = Some(height);
                 !player.on_ground
             } {
                 peak = peak.max(player.body.position.y - 1.0);

@@ -16,7 +16,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use avatar::Avatar;
-use glam::{IVec3, Vec3, vec3};
+use glam::{IVec3, Vec2, Vec3, vec3};
 use player::{JUMP_HEIGHTS, Player, TICK_RATE};
 use render::{Camera, Renderer};
 use spectator::Spectator;
@@ -141,27 +141,27 @@ fn test_players() -> Vec<Player> {
         vec3(37.5, GROUND_HEIGHT as f32 + 12.0, 27.5),
         -135f32.to_radians(),
     );
-    watcher.head_yaw = 0.6;
-    watcher.head_pitch = 0.5;
+    watcher.controls.head_yaw = 0.6;
+    watcher.controls.head_pitch = 0.5;
     let mut walker = Player::new(vec3(39.5, GROUND_HEIGHT as f32, 25.5), 123f32.to_radians());
-    walker.head_yaw = -0.35;
-    walker.head_pitch = -0.3;
-    walker.walking = true;
+    walker.controls.head_yaw = -0.35;
+    walker.controls.head_pitch = -0.3;
+    walker.controls.walk = Vec2::Y;
     vec![watcher, walker]
 }
 
-/// Stand-in behaviour until players have a controller. Walkers walk forward, jump at anything in
-/// the way, and turn away if it's still blocking on the way back down. Everyone else hops on the
-/// spot as low as a jump goes.
+/// Stand-in agent: drives a player only through its controls, as a real agent will. Walkers walk
+/// forward, jump at anything in the way, and turn away if it's still blocking on the way back
+/// down. Everyone else hops on the spot as low as a jump goes.
 fn wander(player: &mut Player, world: &World) {
     let blocked = player.tick(world);
-    if !player.walking {
-        player.jump(*JUMP_HEIGHTS.start());
+    if player.controls.walk == Vec2::ZERO {
+        player.controls.jump = Some(*JUMP_HEIGHTS.start());
     } else if blocked.x || blocked.z {
-        if player.on_ground {
-            player.jump(*JUMP_HEIGHTS.end());
-        } else if player.fall_velocity < 0.0 {
-            player.yaw += 100f32.to_radians();
+        if player.is_on_ground() {
+            player.controls.jump = Some(*JUMP_HEIGHTS.end());
+        } else if player.vertical_velocity() < 0.0 {
+            player.controls.yaw += 100f32.to_radians();
         }
     }
 }
@@ -196,7 +196,7 @@ mod tests {
         for _ in 0..(3600.0 * TICK_RATE) as u32 {
             for player in &mut players {
                 wander(player, &world);
-                let position = player.body.position;
+                let position = player.avatar(1.0).position;
                 assert!(position.x > 1.0 && position.z > 1.0, "{position}");
                 assert!(position.x < inside.x && position.z < inside.z, "{position}");
             }
