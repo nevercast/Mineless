@@ -1090,8 +1090,9 @@ mod tests {
             .count();
         assert!(sand > 1000, "{sand}");
 
-        // A lump of land floating over the island at about (195, 90, 87): the solid cells
-        // joined to it never reach the edges of a box drawn round it, so nothing holds it up.
+        // A lump of land floating over the island at about (195, 90, 87): the ground joined to
+        // it never reaches the edges of a box drawn round it, so nothing holds it up. Trees
+        // don't count, since a canopy can touch it without holding it up.
         let world_chunks = IVec3::new(20, HEIGHT / SIZE, 20);
         let mut world = World::default();
         let (low, high) = (IVec3::new(11, 4, 4), IVec3::new(13, 6, 6));
@@ -1105,8 +1106,12 @@ mod tests {
             }
         }
         let (min, max) = (low * SIZE, (high + 1) * SIZE - 1);
+        let ground = |position: IVec3| {
+            let block = world.block(position);
+            block.is_solid() && !matches!(block, Block::OakLog(_) | Block::OakLeaves)
+        };
         let start = IVec3::new(195, 90, 87);
-        assert!(world.block(start).is_solid());
+        assert!(ground(start));
         let mut reached = std::collections::HashSet::from([start]);
         let mut frontier = vec![start];
         while let Some(position) = frontier.pop() {
@@ -1123,7 +1128,7 @@ mod tests {
                 IVec3::NEG_Z,
             ] {
                 let next = position + step;
-                if world.block(next).is_solid() && reached.insert(next) {
+                if ground(next) && reached.insert(next) {
                     frontier.push(next);
                 }
             }
