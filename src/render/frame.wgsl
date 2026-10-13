@@ -2,6 +2,7 @@
 
 struct Frame {
     view_projection: mat4x4<f32>,
+    inverse_view_projection: mat4x4<f32>,
     /// Unit vector toward the sun or moon.
     light_direction: vec3<f32>,
     /// Seconds since midnight. A day is a whole number of skin glow loops, so it wraps cleanly.
@@ -11,6 +12,10 @@ struct Frame {
     camera_position: vec3<f32>,
     /// Matches the sky behind the world, so distant terrain fades into it.
     fog_color: vec3<f32>,
+    /// What the daytime skybox image is multiplied by, warm at dusk.
+    sky_tint: vec3<f32>,
+    /// 1 by day and 0 at night: how much of the skybox shows over the plain horizon colour.
+    daylight: f32,
 };
 
 /// Fog starts this many blocks from the camera and hides everything past `FOG_END`.

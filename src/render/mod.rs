@@ -9,6 +9,7 @@ mod camera;
 mod chunk_meshes;
 mod post;
 mod skins;
+mod skybox;
 mod texture;
 
 pub use camera::Camera;
@@ -16,6 +17,7 @@ pub use camera::Camera;
 use avatar::AvatarRenderer;
 use chunk_meshes::ChunkMeshes;
 use post::{HDR_FORMAT, PostProcess};
+use skybox::Skybox;
 use texture::BlockTextures;
 
 use crate::mesher::{Mesh, Vertex};
@@ -50,6 +52,7 @@ const VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayou
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct FrameUniforms {
     view_projection: Mat4,
+    inverse_view_projection: Mat4,
     light_direction: Vec3,
     time: f32,
     light_color: Vec3,
@@ -60,6 +63,8 @@ struct FrameUniforms {
     _pad3: f32,
     fog_color: Vec3,
     _pad4: f32,
+    sky_tint: Vec3,
+    daylight: f32,
 }
 
 pub struct Renderer {
@@ -72,6 +77,7 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     chunk_meshes: ChunkMeshes,
     avatar: AvatarRenderer,
+    skybox: Skybox,
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
@@ -134,6 +140,7 @@ impl Renderer {
         let pipeline = create_chunk_pipeline(&device, &frame_layout, &textures.layout);
 
         let avatar = AvatarRenderer::new(&device, &queue, &frame_layout, DEPTH_FORMAT);
+        let skybox = Skybox::new(&device, &queue, &frame_layout, DEPTH_FORMAT);
         let depth_view = create_depth_view(&device, &config);
         let post = PostProcess::new(&device, config.format, (config.width, config.height));
         Self {
@@ -146,6 +153,7 @@ impl Renderer {
             pipeline,
             chunk_meshes: ChunkMeshes::default(),
             avatar,
+            skybox,
             frame_buffer,
             frame_bind_group,
             texture_bind_group: textures.bind_group,
@@ -187,17 +195,21 @@ impl Renderer {
             }
             _ => return,
         };
+        let view_projection = camera.view_projection(self.aspect_ratio());
         self.queue.write_buffer(
             &self.frame_buffer,
             0,
             bytemuck::bytes_of(&FrameUniforms {
-                view_projection: camera.view_projection(self.aspect_ratio()),
+                view_projection,
+                inverse_view_projection: view_projection.inverse(),
                 light_direction: sky.light_direction,
                 time,
                 light_color: sky.light_color,
                 ambient: sky.ambient,
                 camera_position: camera.position,
-                fog_color: sky.color,
+                fog_color: sky.horizon,
+                sky_tint: sky.skybox_tint,
+                daylight: sky.daylight,
                 ..Zeroable::zeroed()
             }),
         );
@@ -218,12 +230,7 @@ impl Renderer {
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: sky.color.x.into(),
-                                g: sky.color.y.into(),
-                                b: sky.color.z.into(),
-                                a: 1.0,
-                            }),
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                             store: wgpu::StoreOp::Store,
                         },
                     }),
@@ -249,6 +256,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            self.skybox.draw(&mut pass, &self.frame_bind_group);
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
