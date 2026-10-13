@@ -78,11 +78,11 @@ impl AvatarRenderer {
             "avatar",
             &shader,
             &[Some(frame_layout), Some(&layout), Some(&skins.layout)],
-            Some(wgpu::VertexBufferLayout {
+            &[Some(wgpu::VertexBufferLayout {
                 array_stride: size_of::<AvatarVertex>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &VERTEX_ATTRIBUTES,
-            }),
+            })],
             true,
         );
 

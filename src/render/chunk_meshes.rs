@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use glam::IVec3;
 use wgpu::util::DeviceExt;
 
+use sim::world::CHUNK_SIZE;
+
 use crate::mesher::Mesh;
 
 /// GPU buffers for each chunk that has visible faces, keyed by chunk coordinate.
@@ -14,6 +16,8 @@ pub struct ChunkMeshes {
 
 pub struct GpuMesh {
     pub vertex_buffer: wgpu::Buffer,
+    /// The chunk's world position, read once per vertex as an instance attribute.
+    pub origin_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub index_count: u32,
 }
@@ -28,6 +32,11 @@ impl ChunkMeshes {
             vertex_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("chunk vertices"),
                 contents: bytemuck::cast_slice(&mesh.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            origin_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("chunk origin"),
+                contents: bytemuck::bytes_of(&(chunk * CHUNK_SIZE as i32).as_vec3().to_array()),
                 usage: wgpu::BufferUsages::VERTEX,
             }),
             index_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
