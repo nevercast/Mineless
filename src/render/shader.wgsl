@@ -9,6 +9,7 @@ struct VertexOutput {
     @location(1) @interpolate(flat) normal: vec3<f32>,
     @location(2) occlusion: f32,
     @location(3) @interpolate(flat) tile: u32,
+    @location(4) world_position: vec3<f32>,
 };
 
 @vertex
@@ -25,6 +26,7 @@ fn vs_main(
     out.normal = normal;
     out.occlusion = occlusion;
     out.tile = tile;
+    out.world_position = position;
     return out;
 }
 
@@ -34,5 +36,5 @@ fn fs_main(in: VertexOutput) -> SceneOutput {
     var out: SceneOutput;
     out.color = vec4<f32>(color.rgb * light(in.normal) * in.occlusion, color.a);
     out.emissive = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    return out;
+    return fogged(out, in.world_position);
 }

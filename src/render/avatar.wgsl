@@ -30,6 +30,7 @@ struct VertexOutput {
     @location(3) @interpolate(flat) seed: f32,
     /// Rest-pose position in skin texels, so the glow pattern sticks to the body as it moves.
     @location(4) model_position: vec3<f32>,
+    @location(5) world_position: vec3<f32>,
 };
 
 @vertex
@@ -43,7 +44,9 @@ fn vs_main(
     var out: VertexOutput;
     // Part transforms are rigid, so they turn normals the same way they turn positions.
     let transform = instances[instance].parts[part];
-    out.clip_position = frame.view_projection * transform * vec4<f32>(position, 1.0);
+    let world_position = transform * vec4<f32>(position, 1.0);
+    out.clip_position = frame.view_projection * world_position;
+    out.world_position = world_position.xyz;
     out.uv = uv;
     out.normal = (transform * vec4<f32>(normal, 0.0)).xyz;
     out.skin = instances[instance].skin;
@@ -66,5 +69,5 @@ fn fs_main(in: VertexOutput) -> SceneOutput {
     var out: SceneOutput;
     out.color = vec4<f32>(albedo.rgb * (light(in.normal) + spill * m) + glow, 1.0);
     out.emissive = vec4<f32>(glow, 1.0);
-    return out;
+    return fogged(out, in.world_position);
 }

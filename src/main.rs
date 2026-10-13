@@ -92,7 +92,7 @@ impl ApplicationHandler for App {
                 let avatars: Vec<Avatar> = self.players.iter().map(|p| p.avatar(alpha)).collect();
                 let day_fraction = ((self.ticks % DAY_TICKS) as f32 + alpha) / DAY_TICKS as f32;
                 renderer.render(
-                    self.camera.view_projection(renderer.aspect_ratio()),
+                    &self.camera,
                     &Sky::at(day_fraction),
                     day_fraction * DAY_TICKS as f32 / TICK_RATE,
                     &avatars,
