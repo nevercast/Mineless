@@ -203,7 +203,7 @@ fn create_bind_group(
 }
 
 fn load_skin(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
-    let png = include_bytes!("../../textures/entity/player.png");
+    let png = include_bytes!("../../textures/entity/skins/player.png");
     let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
         .expect("decode player skin")
         .to_rgba8();
