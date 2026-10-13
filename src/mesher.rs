@@ -77,23 +77,57 @@ const FACES: [Face; 6] = [
 
 const UVS: [[f32; 2]; 4] = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
 
+/// Blocks along each edge of a chunk plus a one-block border on every side.
+const PADDED: i32 = CHUNK_SIZE as i32 + 2;
+
+/// One chunk's blocks and the border around it, copied out of the world once. Meshing reads every
+/// block several times over (face visibility and twelve AO samples per face), and a flat array
+/// read is far cheaper than finding the block's chunk in the world each time.
+struct Snapshot {
+    /// World position of the first block in `blocks`, one block below and behind the chunk.
+    origin: IVec3,
+    blocks: Vec<Block>,
+}
+
+impl Snapshot {
+    fn new(world: &World, chunk: IVec3) -> Self {
+        let origin = chunk * CHUNK_SIZE as i32 - IVec3::ONE;
+        let mut blocks = Vec::with_capacity((PADDED * PADDED * PADDED) as usize);
+        for y in 0..PADDED {
+            for z in 0..PADDED {
+                for x in 0..PADDED {
+                    blocks.push(world.block(origin + IVec3::new(x, y, z)));
+                }
+            }
+        }
+        Self { origin, blocks }
+    }
+
+    /// The block at a world position inside the chunk or its border.
+    fn block(&self, position: IVec3) -> Block {
+        let local = position - self.origin;
+        self.blocks[((local.y * PADDED + local.z) * PADDED + local.x) as usize]
+    }
+}
+
 /// Builds the mesh for one chunk, emitting only faces that border air. Neighbours are read
 /// from the world so faces between touching chunks are culled too.
 pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> Mesh {
+    let blocks = Snapshot::new(world, chunk);
     let mut mesh = Mesh::default();
     let origin = chunk * CHUNK_SIZE as i32;
     for y in 0..CHUNK_SIZE as i32 {
         for z in 0..CHUNK_SIZE as i32 {
             for x in 0..CHUNK_SIZE as i32 {
                 let position = origin + IVec3::new(x, y, z);
-                let block = world.block(position);
+                let block = blocks.block(position);
                 if block == Block::Air {
                     continue;
                 }
                 for face in &FACES {
-                    if world.block(position + face.normal) == Block::Air {
+                    if blocks.block(position + face.normal) == Block::Air {
                         let tile = Tile::for_face(block, face.normal.y);
-                        let occlusion = face_occlusion(world, position, face);
+                        let occlusion = face_occlusion(&blocks, position, face);
                         push_face(&mut mesh, face, position, tile, occlusion);
                     }
                 }
@@ -108,9 +142,9 @@ const OCCLUSION_BRIGHTNESS: [f32; 4] = [1.0, 0.8, 0.65, 0.5];
 
 /// How many of the three blocks around each corner of a face are solid, looking from the air
 /// cell in front of the face. Two solid sides fully enclose the corner whatever the diagonal is.
-fn face_occlusion(world: &World, position: IVec3, face: &Face) -> [usize; 4] {
+fn face_occlusion(blocks: &Snapshot, position: IVec3, face: &Face) -> [usize; 4] {
     let in_front = position + face.normal;
-    let solid = |offset: IVec3| world.block(in_front + offset) != Block::Air;
+    let solid = |offset: IVec3| blocks.block(in_front + offset) != Block::Air;
     face.corners.map(|corner| {
         // Step towards the corner along each axis the face lies in (the ones the normal ignores).
         let toward = IVec3::from_array(corner.map(|c| if c > 0.5 { 1 } else { -1 }));
@@ -193,6 +227,7 @@ mod tests {
         world.set_block(floor + IVec3::new(1, 1, 0), Block::Stone);
         let top = &FACES[2];
         // Top face corners are (0,1,1), (1,1,1), (1,1,0), (0,1,0): the +X pair touch the wall.
-        assert_eq!(face_occlusion(&world, floor, top), [0, 1, 1, 0]);
+        let blocks = Snapshot::new(&world, IVec3::ZERO);
+        assert_eq!(face_occlusion(&blocks, floor, top), [0, 1, 1, 0]);
     }
 }
