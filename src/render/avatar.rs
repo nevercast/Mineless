@@ -44,7 +44,7 @@ impl AvatarRenderer {
         let skin = load_skin(device, queue);
         // Nearest filtering keeps the skin's texels crisp; the avatar is small enough on screen
         // that it doesn't need mips yet.
-        let sampler = device.create_sampler(&Default::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("avatar"),
             entries: &[
@@ -91,7 +91,7 @@ impl AvatarRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: size_of::<AvatarVertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -106,14 +106,14 @@ impl AvatarRenderer {
                 format: depth_format,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: Default::default(),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: Default::default(),
+            multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(color_format.into())],
             }),
             multiview_mask: None,
@@ -228,5 +228,5 @@ fn load_skin(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
             wgpu::util::TextureDataOrder::LayerMajor,
             &image,
         )
-        .create_view(&Default::default())
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }

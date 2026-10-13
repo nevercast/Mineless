@@ -127,7 +127,7 @@ fn peak_height(mut velocity: f32) -> f32 {
 fn launch_velocity(height: f32) -> f32 {
     let (mut low, mut high) = (0.0, 1.0);
     for _ in 0..32 {
-        let middle = (low + high) / 2.0;
+        let middle = f32::midpoint(low, high);
         if peak_height(middle) < height {
             low = middle;
         } else {

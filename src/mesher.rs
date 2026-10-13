@@ -124,7 +124,7 @@ fn face_occlusion(world: &World, position: IVec3, face: &Face) -> [usize; 4] {
         if side_a && side_b {
             3
         } else {
-            side_a as usize + side_b as usize + solid(sides[0] + sides[1]) as usize
+            usize::from(side_a) + usize::from(side_b) + usize::from(solid(sides[0] + sides[1]))
         }
     })
 }

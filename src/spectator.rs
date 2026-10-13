@@ -53,7 +53,9 @@ impl Spectator {
         // Walk along the ground plane regardless of pitch, like a Minecraft spectator.
         let forward = Vec3::new(-camera.yaw.sin(), 0.0, -camera.yaw.cos());
         let right = forward.cross(Vec3::Y);
-        let axis = |positive: bool, negative: bool| positive as i32 as f32 - negative as i32 as f32;
+        let axis = |positive: bool, negative: bool| {
+            i32::from(positive) as f32 - i32::from(negative) as f32
+        };
         let direction = forward * axis(self.forward, self.back)
             + right * axis(self.right, self.left)
             + Vec3::Y * axis(self.up, self.down);
