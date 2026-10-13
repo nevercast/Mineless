@@ -29,7 +29,10 @@ fn vs_main(
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: VertexOutput) -> SceneOutput {
     let color = textureSample(block_texture, block_sampler, in.uv, in.tile);
-    return vec4<f32>(color.rgb * light(in.normal) * in.occlusion, color.a);
+    var out: SceneOutput;
+    out.color = vec4<f32>(color.rgb * light(in.normal) * in.occlusion, color.a);
+    out.emissive = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    return out;
 }

@@ -46,6 +46,8 @@ const SKIN_GLOW_FLOOR: f32 = 0.25;
 // Whole-body pulse depth and period.
 const SKIN_GLOW_THROB_DEPTH: f32 = 0.35;
 const SKIN_GLOW_THROB_SECS: f32 = 1.0;
+// Glow brightness on the HDR target. The handover suggests 1.5 to 3.
+const SKIN_EMISSIVE_STRENGTH: f32 = 2.0;
 // Drift in noise units per second for the two octaves. Each component times SKIN_GLOW_LOOP_SECS
 // is a whole multiple of SKIN_NOISE_PERIOD, so the pattern returns to its start and time can wrap
 // without a visible jump.
@@ -63,19 +65,4 @@ fn skin_glow_modulation(model_position: vec3<f32>, time: f32, seed: f32) -> f32 
     let throb = 1.0 - SKIN_GLOW_THROB_DEPTH
         * (0.5 - 0.5 * cos(6.2831853 * t / SKIN_GLOW_THROB_SECS));
     return throb * mix(SKIN_GLOW_FLOOR, 1.0, smoothstep(0.2, 0.8, n));
-}
-
-/// Albedo lit by the world plus the skin's own spill light, with its glow added on top. Spill is
-/// light from the glowing texels, so it pulses with them; the glow ignores world light entirely.
-fn skin_shade(
-    albedo: vec3<f32>,
-    world_light: vec3<f32>,
-    emissive: f32,
-    spill: vec3<f32>,
-    model_position: vec3<f32>,
-    time: f32,
-    seed: f32,
-) -> vec3<f32> {
-    let m = skin_glow_modulation(model_position, time, seed);
-    return albedo * (world_light + spill * m) + albedo * emissive * m;
 }

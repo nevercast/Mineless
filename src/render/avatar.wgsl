@@ -53,7 +53,7 @@ fn vs_main(
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: VertexOutput) -> SceneOutput {
     let albedo = textureSample(skin_albedo, skin_sampler, in.uv, in.skin);
     // The base layer is opaque; empty parts of the overlay layer are cut out.
     if albedo.a < 0.5 {
@@ -61,14 +61,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let emissive = textureSample(skin_emissive, skin_sampler, in.uv, in.skin).r;
     let spill = textureSample(skin_spill, skin_sampler, in.uv, in.skin).rgb;
-    let color = skin_shade(
-        albedo.rgb,
-        light(in.normal),
-        emissive,
-        spill,
-        in.model_position,
-        frame.time,
-        in.seed,
-    );
-    return vec4<f32>(color, 1.0);
+    let m = skin_glow_modulation(in.model_position, frame.time, in.seed);
+    let glow = albedo.rgb * emissive * m * SKIN_EMISSIVE_STRENGTH;
+    var out: SceneOutput;
+    out.color = vec4<f32>(albedo.rgb * (light(in.normal) + spill * m) + glow, 1.0);
+    out.emissive = vec4<f32>(glow, 1.0);
+    return out;
 }

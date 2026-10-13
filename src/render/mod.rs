@@ -7,6 +7,7 @@ use winit::window::Window;
 mod avatar;
 mod camera;
 mod chunk_meshes;
+mod post;
 mod skins;
 mod texture;
 
@@ -14,6 +15,7 @@ pub use camera::Camera;
 
 use avatar::AvatarRenderer;
 use chunk_meshes::ChunkMeshes;
+use post::{HDR_FORMAT, PostProcess};
 use texture::BlockTextures;
 
 use crate::mesher::{Mesh, Vertex};
@@ -21,6 +23,19 @@ use crate::sky::Sky;
 use sim::avatar::Avatar;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// Colour targets of every scene pipeline, matching `SceneOutput` in frame.wgsl.
+const SCENE_TARGETS: [Option<wgpu::ColorTargetState>; 2] = [
+    Some(wgpu::ColorTargetState {
+        format: HDR_FORMAT,
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
+    }),
+    Some(wgpu::ColorTargetState {
+        format: HDR_FORMAT,
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
+    }),
+];
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
     0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Float32, 4 => Uint32
 ];
@@ -49,6 +64,7 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     depth_view: wgpu::TextureView,
+    post: PostProcess,
     pipeline: wgpu::RenderPipeline,
     chunk_meshes: ChunkMeshes,
     avatar: AvatarRenderer,
@@ -111,18 +127,18 @@ impl Renderer {
         });
 
         let textures = BlockTextures::load(&device, &queue);
-        let pipeline =
-            create_chunk_pipeline(&device, &frame_layout, &textures.layout, config.format);
+        let pipeline = create_chunk_pipeline(&device, &frame_layout, &textures.layout);
 
-        let avatar =
-            AvatarRenderer::new(&device, &queue, &frame_layout, config.format, DEPTH_FORMAT);
+        let avatar = AvatarRenderer::new(&device, &queue, &frame_layout, DEPTH_FORMAT);
         let depth_view = create_depth_view(&device, &config);
+        let post = PostProcess::new(&device, config.format, (config.width, config.height));
         Self {
             surface,
             device,
             queue,
             config,
             depth_view,
+            post,
             pipeline,
             chunk_meshes: ChunkMeshes::default(),
             avatar,
@@ -149,6 +165,7 @@ impl Renderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_view(&self.device, &self.config);
+        self.post.resize(&self.device, (width, height));
     }
 
     /// `time` is seconds since midnight, for animation.
@@ -189,20 +206,31 @@ impl Renderer {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("main"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: sky.color.x.into(),
-                            g: sky.color.y.into(),
-                            b: sky.color.z.into(),
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: self.post.scene(),
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: sky.color.x.into(),
+                                g: sky.color.y.into(),
+                                b: sky.color.z.into(),
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: self.post.emissive(),
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
@@ -225,6 +253,7 @@ impl Renderer {
             }
             self.avatar.draw(&mut pass, &self.frame_bind_group);
         }
+        self.post.draw(&mut encoder, &view);
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
     }
@@ -242,7 +271,6 @@ fn create_chunk_pipeline(
     device: &wgpu::Device,
     frame_layout: &wgpu::BindGroupLayout,
     texture_layout: &wgpu::BindGroupLayout,
-    format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
     let shader = frame_shader(device, "chunk", include_str!("shader.wgsl"));
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -275,7 +303,7 @@ fn create_chunk_pipeline(
             module: &shader,
             entry_point: Some("fs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            targets: &[Some(format.into())],
+            targets: &SCENE_TARGETS,
         }),
         multiview_mask: None,
         cache: None,
