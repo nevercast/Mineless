@@ -5,6 +5,8 @@ use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 use wgpu::util::DeviceExt;
 
+use super::font::{GLYPH_WIDTH, glyph};
+
 const BACKGROUND: wgpu::Color = wgpu::Color {
     r: 0.02,
     g: 0.03,
@@ -14,7 +16,7 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
 const TEXT: [f32; 3] = [0.85, 0.88, 0.92];
 const BAR_TRACK: [f32; 3] = [0.12, 0.15, 0.2];
 const BAR_FILL: [f32; 3] = [0.35, 0.8, 1.0];
-pub const HEADING: &str = "GENERATING TERRAIN";
+pub const HEADING: &str = "Generating terrain";
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -173,45 +175,6 @@ fn text(quads: &mut Vec<(Vec2, Vec2, [f32; 3])>, line: &str, top: f32, unit: f32
     }
 }
 
-const GLYPH_WIDTH: usize = 5;
-
-/// A 5x7 bitmap for each character the loading screen shows, one row per byte from the top,
-/// the leftmost pixel in the highest of the five low bits.
-#[rustfmt::skip]
-fn glyph(character: char) -> Option<[u8; 7]> {
-    Some(match character {
-        ' ' => [0; 7],
-        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
-        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
-        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
-        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
-        '3' => [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
-        '%' => [0b11000, 0b11001, 0b00010, 0b00100, 0b01000, 0b10011, 0b00011],
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,12 +183,8 @@ mod tests {
     #[test]
     fn every_character_on_the_screen_has_a_glyph() {
         let phases = [Phase::ShapingLand, Phase::FillingSea, Phase::BuildingMeshes];
-        let lines = phases.map(|phase| phase.name().to_uppercase());
-        for line in lines
-            .iter()
-            .map(String::as_str)
-            .chain([HEADING, "0123456789%"])
-        {
+        let lines = phases.map(|phase| phase.name());
+        for line in lines.into_iter().chain([HEADING, "0123456789%"]) {
             for character in line.chars() {
                 assert!(glyph(character).is_some(), "{character:?} in {line:?}");
             }
