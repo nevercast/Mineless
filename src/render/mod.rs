@@ -7,6 +7,7 @@ use winit::window::Window;
 mod avatar;
 mod camera;
 mod chunk_meshes;
+mod skins;
 mod texture;
 
 pub use camera::Camera;
@@ -35,7 +36,7 @@ const VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayou
 struct FrameUniforms {
     view_projection: Mat4,
     light_direction: Vec3,
-    _pad0: f32,
+    time: f32,
     light_color: Vec3,
     _pad1: f32,
     ambient: Vec3,
@@ -150,7 +151,8 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, &self.config);
     }
 
-    pub fn render(&mut self, view_projection: Mat4, sky: &Sky, avatars: &[Avatar]) {
+    /// `time` is seconds since midnight, for animation.
+    pub fn render(&mut self, view_projection: Mat4, sky: &Sky, time: f32, avatars: &[Avatar]) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -170,6 +172,7 @@ impl Renderer {
             bytemuck::bytes_of(&FrameUniforms {
                 view_projection,
                 light_direction: sky.light_direction,
+                time,
                 light_color: sky.light_color,
                 ambient: sky.ambient,
                 ..Zeroable::zeroed()

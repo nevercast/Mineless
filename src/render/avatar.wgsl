@@ -1,22 +1,35 @@
 struct Instance {
     /// Body part transforms in the order of `PARTS`.
     parts: array<mat4x4<f32>, 6>,
-    /// Layer of `skins` this avatar wears.
+    /// Layer of the skin arrays this avatar wears.
     skin: u32,
+    /// Offsets this avatar's glow animation from others wearing the same skin.
+    seed: f32,
 };
 
 @group(1) @binding(0)
 var<storage, read> instances: array<Instance>;
-@group(1) @binding(1)
-var skins: texture_2d_array<f32>;
-@group(1) @binding(2)
+
+@group(2) @binding(0)
+var skin_albedo: texture_2d_array<f32>;
+@group(2) @binding(1)
+var skin_emissive: texture_2d_array<f32>;
+@group(2) @binding(2)
+var skin_spill: texture_2d_array<f32>;
+@group(2) @binding(3)
 var skin_sampler: sampler;
+
+/// Skin texels per block, matching `TEXELS_PER_BLOCK` in avatar.rs.
+const TEXELS_PER_BLOCK: f32 = 16.0 / 0.9375;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) normal: vec3<f32>,
     @location(2) @interpolate(flat) skin: u32,
+    @location(3) @interpolate(flat) seed: f32,
+    /// Rest-pose position in skin texels, so the glow pattern sticks to the body as it moves.
+    @location(4) model_position: vec3<f32>,
 };
 
 @vertex
@@ -34,15 +47,28 @@ fn vs_main(
     out.uv = uv;
     out.normal = (transform * vec4<f32>(normal, 0.0)).xyz;
     out.skin = instances[instance].skin;
+    out.seed = instances[instance].seed;
+    out.model_position = position * TEXELS_PER_BLOCK;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let color = textureSample(skins, skin_sampler, in.uv, in.skin);
+    let albedo = textureSample(skin_albedo, skin_sampler, in.uv, in.skin);
     // The base layer is opaque; empty parts of the overlay layer are cut out.
-    if color.a < 0.5 {
+    if albedo.a < 0.5 {
         discard;
     }
-    return vec4<f32>(color.rgb * light(in.normal), 1.0);
+    let emissive = textureSample(skin_emissive, skin_sampler, in.uv, in.skin).r;
+    let spill = textureSample(skin_spill, skin_sampler, in.uv, in.skin).rgb;
+    let color = skin_shade(
+        albedo.rgb,
+        light(in.normal),
+        emissive,
+        spill,
+        in.model_position,
+        frame.time,
+        in.seed,
+    );
+    return vec4<f32>(color, 1.0);
 }

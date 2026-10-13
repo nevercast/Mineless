@@ -4,6 +4,8 @@ struct Frame {
     view_projection: mat4x4<f32>,
     /// Unit vector toward the sun or moon.
     light_direction: vec3<f32>,
+    /// Seconds since midnight. A day is a whole number of skin glow loops, so it wraps cleanly.
+    time: f32,
     light_color: vec3<f32>,
     ambient: vec3<f32>,
 };
