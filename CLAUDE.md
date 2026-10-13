@@ -17,8 +17,8 @@ mostly spectates.
 - `crates/sim` holds the game state agents act on and must never depend on wgpu, winit or
   rendering concerns such as vertex layouts.
 - Tests cover pure logic (sim, meshing); don't test GPU code.
-- Screenshots taken during development go in the PR description, each with a description of
-  what it depicts. Don't commit them.
+- Screenshots taken during development go in `screenshots/` as `YYYY-MM-DD-slug.jpg`, embedded
+  in the PR description, each with a description of what it depicts.
 
 ## Layout
 - `crates/sim`: voxel world, physics, players on a 20 Hz fixed tick, and the avatar pose and skin.
