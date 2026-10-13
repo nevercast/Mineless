@@ -96,6 +96,7 @@ impl ApplicationHandler for App {
                 renderer.render(
                     self.camera.view_projection(renderer.aspect_ratio()),
                     &Sky::at(day_fraction),
+                    day_fraction * DAY_TICKS as f32 / TICK_RATE,
                     &avatars,
                 );
                 window.request_redraw();
