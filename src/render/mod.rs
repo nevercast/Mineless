@@ -9,6 +9,7 @@ mod avatar;
 mod border;
 mod camera;
 mod chunk_meshes;
+mod font;
 mod loading;
 mod post;
 mod skins;

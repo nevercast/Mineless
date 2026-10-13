@@ -136,7 +136,7 @@ impl ApplicationHandler for App {
                     self.loading_drawn = Some(Instant::now());
                     let percent = (loading.progress() * 100.0).floor();
                     let detail = format!("{} {percent:.0}%", loading.phase().name());
-                    renderer.render_loading(loading.progress(), &detail.to_uppercase());
+                    renderer.render_loading(loading.progress(), &detail);
                     window.set_title(&format!("Mineless | seed {} | {detail}", self.seed));
                 }
                 window.request_redraw();
