@@ -75,28 +75,15 @@ impl SkinTextures {
         // Nearest filtering keeps the skins' texels crisp; avatars are small enough on screen that
         // they don't need mips yet.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
-        let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2Array,
-                multisampled: false,
-            },
-            count: None,
-        };
+        let texture_entry =
+            |binding| super::texture_entry(binding, wgpu::TextureViewDimension::D2Array);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("skins"),
             entries: &[
                 texture_entry(0),
                 texture_entry(1),
                 texture_entry(2),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
+                super::sampler_entry(3),
             ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {

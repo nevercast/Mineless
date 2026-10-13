@@ -36,22 +36,8 @@ impl PostProcess {
         output_format: wgpu::TextureFormat,
         size: (u32, u32),
     ) -> Self {
-        let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let sampler_entry = wgpu::BindGroupLayoutEntry {
-            binding: 1,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            count: None,
-        };
+        let texture_entry = |binding| super::texture_entry(binding, wgpu::TextureViewDimension::D2);
+        let sampler_entry = super::sampler_entry(1);
         let blur_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bloom"),
             entries: &[texture_entry(0), sampler_entry],
