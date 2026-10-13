@@ -24,6 +24,7 @@ use spectator::Spectator;
 
 struct App {
     world: World,
+    seed: u32,
     players: Vec<Player>,
     /// Simulation ticks since the world began.
     ticks: u64,
@@ -52,10 +53,11 @@ struct Timings {
 }
 
 impl Timings {
-    fn title(&self) -> String {
+    /// The seed is in the title so a screenshot records which world it shows.
+    fn title(&self, seed: u32) -> String {
         let ms = |seconds: f32, count: u32| seconds * 1000.0 / count.max(1) as f32;
         format!(
-            "Mineless | {:.0} fps | draw {:.1} ms, worst {:.1} ms | tick {:.2} ms",
+            "Mineless | seed {seed} | {:.0} fps | draw {:.1} ms, worst {:.1} ms | tick {:.2} ms",
             self.frames as f32 / self.frame_seconds,
             ms(self.draw_seconds, self.draws),
             ms(self.worst_draw_seconds, 1),
@@ -69,7 +71,8 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let attributes = Window::default_attributes().with_title("Mineless");
+        let attributes =
+            Window::default_attributes().with_title(format!("Mineless | seed {}", self.seed));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         let mut renderer = pollster::block_on(Renderer::new(
             window.clone(),
@@ -140,7 +143,7 @@ impl ApplicationHandler for App {
                     timings.worst_draw_seconds = timings.worst_draw_seconds.max(draw);
                 }
                 if timings.frame_seconds >= 1.0 {
-                    window.set_title(&timings.title());
+                    window.set_title(&timings.title(self.seed));
                     *timings = Timings::default();
                 }
                 window.request_redraw();
@@ -179,9 +182,42 @@ fn set_mouse_capture(window: &Window, capture: bool) -> bool {
 /// 20x8x20 chunks: 320 blocks square, big enough that render costs show up, and 128 tall, room
 /// for the highest mountains.
 const WORLD_CHUNKS: IVec3 = IVec3::new(20, 8, 20);
-/// Fixed for now so every run, and every before-and-after measurement, sees the same world. This
-/// one shows sea, beach, uplands, forest and a floating lump from the start view.
+/// The world unless `--seed` picks another. This one shows sea, beach, uplands, forest and a
+/// floating lump from the start view.
 const SEED: u32 = 142;
+const USAGE: &str = "usage: mineless [--seed <u32>]";
+
+/// The seed from the command-line arguments, not counting the program name.
+fn parse_seed(mut args: impl Iterator<Item = String>) -> Result<u32, String> {
+    let mut seed = SEED;
+    while let Some(arg) = args.next() {
+        if arg != "--seed" {
+            return Err(format!("unknown argument {arg:?}"));
+        }
+        let value = args.next().ok_or("--seed needs a value")?;
+        seed = value.parse().map_err(|_| {
+            format!(
+                "--seed {value:?} is not a whole number from 0 to {}",
+                u32::MAX
+            )
+        })?;
+    }
+    Ok(seed)
+}
+
+/// The start view looks from the eastern plains across the bay to the island upland, framed for
+/// seed 142.
+const START_POSITION: Vec3 = vec3(235.0, 64.0, 235.0);
+const START_TARGET: Vec3 = vec3(140.0, 58.0, 150.0);
+/// Blocks the start camera keeps above the ground beneath it.
+const START_CLEARANCE: f32 = 4.0;
+
+/// The start view for a world whose ground under `START_POSITION` tops out at `ground`. Other
+/// seeds keep its position and direction but rise clear of whatever ground is below.
+fn start_camera(ground: i32) -> Camera {
+    let lift = Vec3::Y * (ground as f32 + START_CLEARANCE - START_POSITION.y).max(0.0);
+    Camera::looking_at(START_POSITION + lift, START_TARGET + lift)
+}
 
 /// The top of the ground at the centre of a column, where a player can stand.
 fn ground_at(world: &World, x: i32, z: i32) -> Vec3 {
@@ -272,17 +308,21 @@ fn look_toward(player: &mut Player, target: Vec3) {
 
 fn main() {
     env_logger::init();
+    let seed = parse_seed(std::env::args().skip(1)).unwrap_or_else(|error| {
+        eprintln!("{error}\n{USAGE}");
+        std::process::exit(2);
+    });
     let event_loop = EventLoop::new().expect("create event loop");
-    let world = world::terrain::generate(WORLD_CHUNKS, SEED);
+    let world = world::terrain::generate(WORLD_CHUNKS, seed);
     let mut app = App {
         players: test_players(&world),
+        camera: start_camera(world.column_top(START_POSITION.x as i32, START_POSITION.z as i32)),
         world,
+        seed,
         ticks: START_TICKS,
         unsimulated: 0.0,
         window: None,
         renderer: None,
-        // From the eastern plains across the bay to the island upland, its beaches and the forest.
-        camera: Camera::looking_at(vec3(235.0, 64.0, 235.0), vec3(140.0, 58.0, 150.0)),
         spectator: Spectator::default(),
         mouse_captured: false,
         last_frame: Instant::now(),
@@ -294,6 +334,44 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seed_from(args: &[&str]) -> Result<u32, String> {
+        parse_seed(args.iter().map(|arg| arg.to_string()))
+    }
+
+    #[test]
+    fn seed_defaults_and_comes_from_the_flag() {
+        assert_eq!(seed_from(&[]), Ok(142));
+        assert_eq!(seed_from(&["--seed", "108"]), Ok(108));
+        assert_eq!(seed_from(&["--seed", "4294967295"]), Ok(u32::MAX));
+    }
+
+    #[test]
+    fn bad_arguments_are_errors() {
+        for args in [
+            &["--seed"][..],
+            &["--seed", "-1"],
+            &["--seed", "4294967296"],
+            &["--seed", "abc"],
+            &["--size", "3"],
+            &["108"],
+        ] {
+            assert!(seed_from(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn start_camera_rises_over_high_ground_and_keeps_its_direction() {
+        let framed = Camera::looking_at(START_POSITION, START_TARGET);
+        let low = start_camera(50);
+        assert_eq!(low.position, START_POSITION);
+        let high = start_camera(90);
+        assert_eq!(high.position, START_POSITION.with_y(94.0));
+        for camera in [low, high] {
+            assert!((camera.yaw - framed.yaw).abs() < 1e-6);
+            assert!((camera.pitch - framed.pitch).abs() < 1e-6);
+        }
+    }
 
     #[test]
     fn wanderer_stays_inside_the_world_border() {
