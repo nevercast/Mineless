@@ -56,6 +56,10 @@ struct FrameUniforms {
     _pad1: f32,
     ambient: Vec3,
     _pad2: f32,
+    camera_position: Vec3,
+    _pad3: f32,
+    fog_color: Vec3,
+    _pad4: f32,
 }
 
 pub struct Renderer {
@@ -169,7 +173,7 @@ impl Renderer {
     }
 
     /// `time` is seconds since midnight, for animation.
-    pub fn render(&mut self, view_projection: Mat4, sky: &Sky, time: f32, avatars: &[Avatar]) {
+    pub fn render(&mut self, camera: &Camera, sky: &Sky, time: f32, avatars: &[Avatar]) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -187,11 +191,13 @@ impl Renderer {
             &self.frame_buffer,
             0,
             bytemuck::bytes_of(&FrameUniforms {
-                view_projection,
+                view_projection: camera.view_projection(self.aspect_ratio()),
                 light_direction: sky.light_direction,
                 time,
                 light_color: sky.light_color,
                 ambient: sky.ambient,
+                camera_position: camera.position,
+                fog_color: sky.color,
                 ..Zeroable::zeroed()
             }),
         );
