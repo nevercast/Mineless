@@ -25,7 +25,7 @@ use texture::BlockTextures;
 use crate::mesher::{ChunkMesh, Vertex};
 use crate::sky::Sky;
 use sim::avatar::Avatar;
-use sim::world::CHUNK_SIZE;
+use sim::world::{CHUNK_SIZE, terrain};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Colour targets of every scene pipeline, matching `SceneOutput` in frame.wgsl.
@@ -339,11 +339,17 @@ enum Layer {
     Translucent,
 }
 
-/// A shader whose source is `body` after frame.wgsl's shared uniforms and lighting.
+/// A shader whose source is `body` after frame.wgsl's shared uniforms, lighting and fog. Fog is
+/// densest at sea level, so the shader takes it from the sim rather than a copy.
 fn frame_shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule {
+    let sea_level = format!("const SEA_LEVEL: f32 = {}.0;\n", terrain::SEA_LEVEL);
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
-        source: wgpu::ShaderSource::Wgsl([include_str!("frame.wgsl"), body].concat().into()),
+        source: wgpu::ShaderSource::Wgsl(
+            [&sea_level, include_str!("frame.wgsl"), body]
+                .concat()
+                .into(),
+        ),
     })
 }
 
