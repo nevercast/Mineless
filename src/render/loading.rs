@@ -138,7 +138,7 @@ fn layout(size: Vec2, progress: f32, detail: &str) -> Vec<(Vec2, Vec2, [f32; 3])
     text(
         &mut quads,
         HEADING,
-        centre.y - bar_half.y - 10.0 * unit,
+        centre.y - bar_half.y - 12.0 * unit,
         unit,
         centre.x,
     );
