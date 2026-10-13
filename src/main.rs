@@ -173,9 +173,9 @@ fn set_mouse_capture(window: &Window, capture: bool) -> bool {
     grabbed
 }
 
-/// 20x6x20 chunks: 320 blocks square, big enough that render costs show up, and 96 tall, room
+/// 20x8x20 chunks: 320 blocks square, big enough that render costs show up, and 128 tall, room
 /// for the highest mountains.
-const WORLD_CHUNKS: IVec3 = IVec3::new(20, 6, 20);
+const WORLD_CHUNKS: IVec3 = IVec3::new(20, 8, 20);
 /// Fixed for now so every run, and every before-and-after measurement, sees the same world.
 const SEED: u32 = 0;
 
@@ -277,8 +277,8 @@ fn main() {
         unsimulated: 0.0,
         window: None,
         renderer: None,
-        // Over the plains, looking up at the mountain range in the middle of the seed's world.
-        camera: Camera::looking_at(vec3(245.0, 80.0, 240.0), vec3(165.0, 45.0, 165.0)),
+        // Over the plains, looking at the escarpment where the eastern upland rises out of them.
+        camera: Camera::looking_at(vec3(190.0, 72.0, 110.0), vec3(280.0, 68.0, 95.0)),
         spectator: Spectator::default(),
         mouse_captured: false,
         last_frame: Instant::now(),
