@@ -30,6 +30,10 @@ impl World {
         world
     }
 
+    fn insert(&mut self, position: IVec3, chunk: Chunk) {
+        self.chunks.insert(position, chunk);
+    }
+
     pub fn chunk_positions(&self) -> impl Iterator<Item = IVec3> + '_ {
         self.chunks.keys().copied()
     }
@@ -40,6 +44,22 @@ impl World {
         self.chunks
             .get(&chunk)
             .map_or(Block::Air, |chunk| chunk.get(local.x, local.y, local.z))
+    }
+
+    /// The height just above the highest solid block in the column at `x`, `z`, where a player
+    /// can stand; 0 if the column is empty.
+    pub fn column_top(&self, x: i32, z: i32) -> i32 {
+        let height = self
+            .chunks
+            .keys()
+            .map(|chunk| chunk.y + 1)
+            .max()
+            .unwrap_or(0)
+            * SIZE;
+        (0..height)
+            .rev()
+            .find(|&y| self.block(IVec3::new(x, y, z)) != Block::Air)
+            .map_or(0, |y| y + 1)
     }
 
     pub fn set_block(&mut self, position: IVec3, block: Block) {

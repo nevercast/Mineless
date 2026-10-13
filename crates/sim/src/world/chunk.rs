@@ -27,6 +27,7 @@ pub enum Axis {
 }
 
 /// A fixed-size cube of blocks addressed by local coordinates in `0..CHUNK_SIZE`.
+#[derive(PartialEq)]
 pub struct Chunk {
     blocks: Box<[Block; VOLUME]>,
 }

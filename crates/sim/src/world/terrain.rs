@@ -3,7 +3,8 @@
 
 use glam::{IVec3, Vec2};
 
-use super::{Block, CHUNK_SIZE, World};
+use super::chunk::Chunk;
+use super::{Block, CHUNK_SIZE, SIZE, World};
 
 /// Lowest the land gets, so there is always stone under the deepest valley.
 const BASE_HEIGHT: f32 = 18.0;
@@ -28,38 +29,78 @@ const WALL_ABOVE_GROUND: i32 = 3;
 /// Fills `chunks` from the origin with the terrain for `seed`. The same seed always gives the
 /// same world.
 pub fn generate(chunks: IVec3, seed: u32) -> World {
-    let mut world = World::empty(chunks);
-    let extent = chunks * CHUNK_SIZE as i32;
-    for x in 0..extent.x {
-        for z in 0..extent.z {
-            let on_edge = x == 0 || z == 0 || x == extent.x - 1 || z == extent.z - 1;
-            if on_edge {
-                // The highest ground the wall borders, so it is never shorter than a jump.
-                let inside = IVec3::new(x, 0, z).clamp(IVec3::ONE, extent - 2);
-                let ground = (-1..=1)
-                    .flat_map(|dx| (-1..=1).map(move |dz| (dx, dz)))
-                    .map(|(dx, dz)| surface_height(seed, inside.x + dx, inside.z + dz))
-                    .max()
-                    .expect("the neighbourhood is never empty");
-                for y in 0..(ground + WALL_ABOVE_GROUND).min(extent.y) {
-                    world.set_block(IVec3::new(x, y, z), Block::Cobblestone);
-                }
-                continue;
-            }
-
-            let surface = surface_height(seed, x, z).min(extent.y);
-            for y in 0..surface {
-                let depth = surface - 1 - y;
-                let block = match depth {
-                    0 if surface < ROCK_LINE => Block::Grass,
-                    1..=DIRT_DEPTH if surface < ROCK_LINE => Block::Dirt,
-                    _ => Block::Stone,
-                };
-                world.set_block(IVec3::new(x, y, z), block);
+    let mut world = World::default();
+    for cx in 0..chunks.x {
+        for cy in 0..chunks.y {
+            for cz in 0..chunks.z {
+                let position = IVec3::new(cx, cy, cz);
+                world.insert(position, generate_chunk(seed, position, chunks));
             }
         }
     }
     world
+}
+
+/// The chunk at `position` in a world `chunks` across, from nothing but the seed and those two,
+/// so chunks come out the same whatever order they are generated in.
+fn generate_chunk(seed: u32, position: IVec3, chunks: IVec3) -> Chunk {
+    let mut chunk = Chunk::empty();
+    let extent = chunks * SIZE;
+    let origin = position * SIZE;
+    for local_x in 0..CHUNK_SIZE {
+        for local_z in 0..CHUNK_SIZE {
+            let (x, z) = (origin.x + local_x as i32, origin.z + local_z as i32);
+            let column = Column::at(seed, x, z, extent);
+            for local_y in 0..CHUNK_SIZE {
+                let block = column.block(origin.y + local_y as i32);
+                if block != Block::Air {
+                    chunk.set(local_x, local_y, local_z, block);
+                }
+            }
+        }
+    }
+    chunk
+}
+
+/// One column of the world: part of the edge wall, or ground.
+enum Column {
+    Wall { top: i32 },
+    Ground { surface: i32 },
+}
+
+impl Column {
+    /// The column at `x`, `z` in a world `extent` blocks across.
+    fn at(seed: u32, x: i32, z: i32, extent: IVec3) -> Self {
+        let on_edge = x == 0 || z == 0 || x == extent.x - 1 || z == extent.z - 1;
+        if on_edge {
+            // The highest ground the wall borders, so it is never shorter than a jump.
+            let inside = IVec3::new(x, 0, z).clamp(IVec3::ONE, extent - 2);
+            let ground = (-1..=1)
+                .flat_map(|dx| (-1..=1).map(move |dz| (dx, dz)))
+                .map(|(dx, dz)| surface_height(seed, inside.x + dx, inside.z + dz))
+                .max()
+                .expect("the neighbourhood is never empty");
+            Column::Wall {
+                top: ground + WALL_ABOVE_GROUND,
+            }
+        } else {
+            Column::Ground {
+                surface: surface_height(seed, x, z),
+            }
+        }
+    }
+
+    fn block(&self, y: i32) -> Block {
+        match *self {
+            Column::Wall { top } if y < top => Block::Cobblestone,
+            Column::Ground { surface } if y < surface => match surface - 1 - y {
+                0 if surface < ROCK_LINE => Block::Grass,
+                1..=DIRT_DEPTH if surface < ROCK_LINE => Block::Dirt,
+                _ => Block::Stone,
+            },
+            _ => Block::Air,
+        }
+    }
 }
 
 /// How many blocks of ground the column at `x`, `z` has.
@@ -150,6 +191,54 @@ mod tests {
             let ceiling = (BASE_HEIGHT + HILL_HEIGHT + MOUNTAIN_HEIGHT) as i32;
             assert!(highest <= ceiling, "seed {seed}: {highest}");
             assert!(highest - lowest > 40, "seed {seed}: {lowest}..{highest}");
+        }
+    }
+
+    const CHUNKS: IVec3 = IVec3::new(3, 6, 3);
+
+    fn chunk_positions() -> Vec<IVec3> {
+        (0..CHUNKS.x)
+            .flat_map(|x| (0..CHUNKS.y).flat_map(move |y| (0..CHUNKS.z).map(move |z| (x, y, z))))
+            .map(IVec3::from)
+            .collect()
+    }
+
+    #[test]
+    fn generation_order_does_not_change_the_world() {
+        let in_order = generate(CHUNKS, 5);
+        let mut reversed = World::default();
+        for position in chunk_positions().into_iter().rev() {
+            reversed.insert(position, generate_chunk(5, position, CHUNKS));
+        }
+        for position in chunk_positions() {
+            assert!(
+                in_order.chunks[&position] == reversed.chunks[&position],
+                "{position}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chunk_generated_alone_matches_the_whole_world() {
+        let world = generate(CHUNKS, 5);
+        let wall = IVec3::new(0, 1, 2);
+        let interior = IVec3::new(1, 1, 1);
+        for position in [wall, interior] {
+            assert!(
+                generate_chunk(5, position, CHUNKS) == world.chunks[&position],
+                "{position}"
+            );
+        }
+        assert_eq!(world.block(IVec3::new(0, 20, 40)), Block::Cobblestone);
+    }
+
+    #[test]
+    fn column_top_is_the_surface_height_inside_the_walls() {
+        let world = generate(CHUNKS, 5);
+        for x in (1..47).step_by(3) {
+            for z in (1..47).step_by(5) {
+                assert_eq!(world.column_top(x, z), surface_height(5, x, z), "{x}, {z}");
+            }
         }
     }
 
