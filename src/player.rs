@@ -3,7 +3,7 @@
 
 use glam::{BVec3, Vec2, Vec3};
 
-use crate::avatar::{Avatar, Pose};
+use crate::avatar::{Avatar, Pose, Skin};
 use crate::physics::Body;
 use crate::world::World;
 
@@ -40,6 +40,7 @@ pub struct Controls {
 
 pub struct Player {
     pub controls: Controls,
+    pub skin: Skin,
     body: Body,
     /// Vertical speed in blocks per tick; up is positive.
     fall_velocity: f32,
@@ -51,8 +52,9 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new(feet: Vec3, yaw: f32) -> Self {
+    pub fn new(feet: Vec3, yaw: f32, skin: Skin) -> Self {
         Self {
+            skin,
             controls: Controls {
                 yaw,
                 ..Default::default()
@@ -121,6 +123,7 @@ impl Player {
                 swing: swing + (self.swing - swing) * alpha,
                 swing_phase: swing_phase + (self.swing_phase - swing_phase) * alpha,
             },
+            skin: self.skin,
         }
     }
 }
@@ -170,7 +173,7 @@ mod tests {
     #[test]
     fn falls_like_minecraft_and_lands_flush() {
         let world = floor();
-        let mut player = Player::new(Vec3::new(8.5, 51.0, 8.5), 0.0);
+        let mut player = Player::new(Vec3::new(8.5, 51.0, 8.5), 0.0, Skin::Player);
         let mut heights = Vec::new();
         while !player.on_ground {
             player.tick(&world);
@@ -186,7 +189,7 @@ mod tests {
     #[test]
     fn falling_speed_settles_at_terminal_velocity() {
         let world = World::empty(IVec3::ONE);
-        let mut player = Player::new(Vec3::new(8.5, 0.0, 8.5), 0.0);
+        let mut player = Player::new(Vec3::new(8.5, 0.0, 8.5), 0.0, Skin::Player);
         for _ in 0..400 {
             player.tick(&world);
         }
@@ -197,7 +200,7 @@ mod tests {
     #[test]
     fn standing_stays_on_the_ground_every_tick() {
         let world = floor();
-        let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0);
+        let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
         player.tick(&world);
         for _ in 0..10 {
             player.tick(&world);
@@ -210,7 +213,7 @@ mod tests {
     fn walks_at_minecraft_speed_in_any_direction() {
         let world = floor();
         for walk in [Vec2::Y, Vec2::X, Vec2::new(1.0, 1.0), Vec2::new(-0.5, 0.0)] {
-            let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0);
+            let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
             player.controls.walk = walk;
             player.tick(&world);
             let moved = player.body.position - Vec3::new(8.5, 1.0, 8.5);
@@ -231,7 +234,7 @@ mod tests {
     fn jumps_peak_at_the_requested_height() {
         let world = floor();
         for height in [0.5, 0.8, 1.25] {
-            let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0);
+            let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
             while !player.on_ground {
                 player.tick(&world);
             }

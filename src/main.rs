@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use avatar::Avatar;
+use avatar::{Avatar, Skin};
 use glam::{IVec3, Vec2, Vec3, vec3};
 use player::{JUMP_HEIGHTS, Player, TICK_RATE};
 use render::{Camera, Renderer};
@@ -144,20 +144,26 @@ const MAX_CATCH_UP: f32 = 0.25;
 /// The world starts mid-morning.
 const START_TICKS: u64 = DAY_TICKS * 3 / 8;
 
-/// Two players near the centre: one dropped from twelve blocks up to hop in place looking up and
-/// to its left, one walking into the centre pit and jumping out, looking down and to its right.
+/// Four players near the centre, one in each skin: one dropped from twelve blocks up to hop in
+/// place looking up and to its left, one hopping on the ground, and two walkers, one of which
+/// starts by walking into the centre pit and jumping out, looking down and to its right.
 fn test_players() -> Vec<Player> {
+    let ground = GROUND_HEIGHT as f32;
     let mut watcher = Player::new(
-        vec3(37.5, GROUND_HEIGHT as f32 + 12.0, 27.5),
+        vec3(37.5, ground + 12.0, 27.5),
         -135f32.to_radians(),
+        Skin::Player,
     );
     watcher.controls.head_yaw = 0.6;
     watcher.controls.head_pitch = 0.5;
-    let mut walker = Player::new(vec3(39.5, GROUND_HEIGHT as f32, 25.5), 123f32.to_radians());
+    let hopper = Player::new(vec3(35.5, ground, 31.5), -135f32.to_radians(), Skin::Autumn);
+    let mut walker = Player::new(vec3(39.5, ground, 25.5), 123f32.to_radians(), Skin::CyberA);
     walker.controls.head_yaw = -0.35;
     walker.controls.head_pitch = -0.3;
     walker.controls.walk = Vec2::Y;
-    vec![watcher, walker]
+    let mut stroller = Player::new(vec3(30.5, ground, 38.5), -100f32.to_radians(), Skin::CyberB);
+    stroller.controls.walk = Vec2::Y;
+    vec![watcher, hopper, walker, stroller]
 }
 
 /// Stand-in agent: drives a player only through its controls, as a real agent will. Walkers walk
