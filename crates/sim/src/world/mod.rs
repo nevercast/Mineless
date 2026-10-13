@@ -107,6 +107,14 @@ impl World {
             .map_or(0, |y| y + 1)
     }
 
+    /// The block filling the chunk at chunk coordinate `chunk`, if one block fills all of it.
+    pub fn uniform_chunk(&self, chunk: IVec3) -> Option<Block> {
+        match self.chunks.get(&chunk)? {
+            Chunk::Uniform(block) => Some(*block),
+            Chunk::Mixed(_) => None,
+        }
+    }
+
     pub fn set_block(&mut self, position: IVec3, block: Block) {
         let (chunk, local) = split(position);
         let chunk = self.chunks.get_mut(&chunk).expect("chunk is loaded");

@@ -118,6 +118,10 @@ pub fn generate(extent: Extent, seed: u32) -> World {
         world.insert(position, generate_chunk(seed, position, extent));
     }
     fill_sea(&mut world, extent);
+    // The sea can turn a chunk of air into a chunk of water.
+    for chunk in world.chunks.values_mut() {
+        chunk.compact();
+    }
     world
 }
 
@@ -199,6 +203,7 @@ fn generate_chunk(seed: u32, position: IVec3, extent: Extent) -> Chunk {
     if let Some(columns) = &columns {
         trees::grow(seed, &mut chunk, origin, columns, extent);
     }
+    chunk.compact();
     chunk
 }
 
@@ -728,6 +733,24 @@ mod tests {
             );
         }
         assert_eq!(world.block(IVec3::new(-24, 20, 5)), Block::WorldBorder);
+    }
+
+    /// A hash of every block of a generated world, recorded before chunks could be stored as one
+    /// block, so storing them that way changed nothing.
+    #[test]
+    fn compact_storage_keeps_the_world_block_for_block() {
+        let world = generate(EXTENT, 5);
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for x in -32..32 {
+            for y in 0..EXTENT.height {
+                for z in -32..32 {
+                    for byte in format!("{:?}", world.block(IVec3::new(x, y, z))).bytes() {
+                        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+                    }
+                }
+            }
+        }
+        assert_eq!(hash, 0xff3f_5c37_a710_5744);
     }
 
     #[test]
