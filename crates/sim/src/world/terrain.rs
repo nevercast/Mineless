@@ -1,7 +1,9 @@
 //! Seeded terrain from a 3D density field: low plains a few blocks above the sea, broken by
 //! upland regions that rise in escarpments with ledges, overhangs and now and then an arch or a
 //! lump of floating land, all inside a cobblestone wall that keeps walkers from falling off the
-//! edge of the world.
+//! edge of the world. Climate and biome then decide what the top few blocks of every surface are
+//! made of: sandy and gravelly coasts and sea floors, grass, bare rock on cliffs and snow on cold
+//! high ground.
 
 use glam::{IVec3, Vec2, Vec3};
 
@@ -15,8 +17,15 @@ pub const HEIGHT: i32 = 128;
 pub const SEA_LEVEL: i32 = 40;
 
 /// Where the low ground sits relative to the sea, and how far it strays above and below.
-const LOWLAND_ABOVE_SEA: f32 = 2.0;
-const LOWLAND_SPREAD: f32 = 50.0;
+const LOWLAND_SPREAD: f32 = 35.0;
+/// Seas deepen faster than land rises, so there is deep water with a varied floor offshore.
+const SEA_SPREAD: f32 = 80.0;
+/// Shifts base elevation so that most of the world is land.
+const ELEVATION_OFFSET: f32 = 0.035;
+/// Land climbs this many blocks within a few blocks of the shore, so beaches are a narrow band
+/// rather than wide flats of plains that happen to lie just above the sea.
+const COAST_RISE: f32 = 4.0;
+const COAST_EDGE: f32 = 0.02;
 /// How far uplands rise above the lowland they stand on.
 const UPLAND_RISE: f32 = 50.0;
 /// Blocks over which density turns from solid to air around the target height.
@@ -45,11 +54,37 @@ const BEDROCK_ROWS: i32 = 4;
 const CEILING_START: i32 = 112;
 const CEILING_FALL: f32 = 0.75;
 
-/// Exposed tops at or above this are bare rock, so peaks read as mountains rather than grassy
-/// lumps.
-const ROCK_LINE: i32 = SEA_LEVEL + 40;
-/// Grass on top of this many dirt blocks, then stone below.
-const DIRT_DEPTH: i32 = 3;
+/// Blocks across one cell of temperature and humidity, so a world shows one to three climates,
+/// and how far they spread around the middle of `0..=1`.
+const CLIMATE_SCALE: f32 = 400.0;
+const CLIMATE_SPREAD: f32 = 0.8;
+/// Fine noise added to climate so biome and surface boundaries are ragged, not smooth curves.
+const JITTER_SCALE: f32 = 8.0;
+const JITTER: f32 = 0.05;
+/// Temperature lost per block above the sea. Surfaces are snow where it falls below zero, about
+/// 50 blocks up in a mild climate and lower in cold ones.
+const LAPSE: f32 = 0.01;
+
+/// Relief below which a column at the waterline is beach, and above which it is hills.
+const BEACH_RELIEF: f32 = 0.3;
+const HILLS_RELIEF: f32 = 0.5;
+const FOREST_HUMIDITY: f32 = 0.5;
+
+/// Surface runs are this many blocks deep, varying with a small-scale noise.
+const RUN_DEPTHS: std::ops::RangeInclusive<i32> = 2..=5;
+const RUN_SCALE: f32 = 12.0;
+/// Sea floor this close below the surface is sand; deeper it is patches of sand, gravel and dirt.
+const SHALLOWS: i32 = 4;
+const SEABED_SCALE: f32 = 24.0;
+const SEABED_PATCH: f32 = 0.12;
+/// Low-frequency noise that turns stretches of beach to gravel.
+const SHINGLE_SCALE: f32 = 48.0;
+const SHINGLE: f32 = 0.15;
+/// A column top this far above or below a neighbour's is a cliff face of bare rock.
+const CLIFF_STEP: i32 = 3;
+/// Above this, hills are a mix of grass and bare rock in mid-sized patches.
+const HIGH_ROCK_LINE: i32 = SEA_LEVEL + 30;
+const HIGH_ROCK_SCALE: f32 = 16.0;
 /// How far the edge wall stands above the ground just inside it; walkers jump at most 1.25.
 const WALL_ABOVE_GROUND: i32 = 3;
 
@@ -64,6 +99,13 @@ const LEVELS: usize = (HEIGHT / LATTICE_STEP.y) as usize + 1;
 const ELEVATION_SALT: u32 = 0x5bd1_e995;
 const RELIEF_SALT: u32 = 0x9e37_79b9;
 const DETAIL_SALT: u32 = 0x85eb_ca6b;
+const TEMPERATURE_SALT: u32 = 0xc2b2_ae35;
+const HUMIDITY_SALT: u32 = 0x27d4_eb2f;
+const JITTER_SALT: u32 = 0x1656_67b1;
+const RUN_SALT: u32 = 0xd3a2_646c;
+const SEABED_SALT: u32 = 0xfd70_46c5;
+const SHINGLE_SALT: u32 = 0xb55a_4f09;
+const HIGH_ROCK_SALT: u32 = 0x7feb_352d;
 
 /// Fills `chunks` from the origin with the terrain for `seed`. The same seed always gives the
 /// same world.
@@ -91,19 +133,20 @@ fn generate_chunk(seed: u32, position: IVec3, chunks: IVec3) -> Chunk {
     let mut chunk = Chunk::empty();
     let extent = chunks * SIZE;
     let origin = position * SIZE;
-    let lattice = Lattice::around(seed, origin);
+    let columns = Neighbourhood::around(seed, origin);
     for local_x in 0..CHUNK_SIZE {
         for local_z in 0..CHUNK_SIZE {
             let (x, z) = (origin.x + local_x as i32, origin.z + local_z as i32);
             let on_edge = x == 0 || z == 0 || x == extent.x - 1 || z == extent.z - 1;
-            let wall_top = on_edge.then(|| wall_top(&lattice, x, z, extent));
-            let column = lattice.column(x, z);
+            let wall_top = on_edge.then(|| wall_top(&columns, x, z, extent));
+            let surface = Surface::at(seed, x, z, &columns);
+            let column = columns.column(x, z);
             for local_y in 0..CHUNK_SIZE {
                 let y = origin.y + local_y as i32;
                 let block = match wall_top {
                     Some(top) if y < top => Block::Cobblestone,
                     Some(_) => Block::Air,
-                    None => ground_block(&column, y),
+                    None => surface.block(column, y),
                 };
                 if block != Block::Air {
                     chunk.set(local_x, local_y, local_z, block);
@@ -115,29 +158,195 @@ fn generate_chunk(seed: u32, position: IVec3, chunks: IVec3) -> Chunk {
 }
 
 /// The highest ground the wall borders, so it is never shorter than a jump.
-fn wall_top(lattice: &Lattice, x: i32, z: i32, extent: IVec3) -> i32 {
+fn wall_top(columns: &Neighbourhood, x: i32, z: i32, extent: IVec3) -> i32 {
     let inside = IVec3::new(x, 0, z).clamp(IVec3::ONE, extent - 2);
     let ground = (-1..=1)
         .flat_map(|dx| (-1..=1).map(move |dz| (dx, dz)))
-        .map(|(dx, dz)| lattice.column(inside.x + dx, inside.z + dz).top())
+        .map(|(dx, dz)| columns.top(inside.x + dx, inside.z + dz))
         .max()
         .expect("the neighbourhood is never empty");
     ground + WALL_ABOVE_GROUND
 }
 
-/// Every solid cell with air above it is grass on a few blocks of dirt, so ledges and floating
-/// land are grassed as well as the highest ground in the column.
-fn ground_block(column: &Column, y: i32) -> Block {
-    if !column.solid(y) {
-        return Block::Air;
+/// The columns of one chunk and one more all round, with their tops, since the wall and the
+/// cliff test both look at neighbouring columns.
+struct Neighbourhood {
+    /// World position of the first column.
+    origin: IVec3,
+    columns: Vec<Column>,
+    tops: Vec<i32>,
+}
+
+impl Neighbourhood {
+    const ACROSS: i32 = SIZE + 2;
+
+    fn around(seed: u32, chunk_origin: IVec3) -> Self {
+        let lattice = Lattice::around(seed, chunk_origin);
+        let origin = chunk_origin - IVec3::new(1, 0, 1);
+        let columns: Vec<Column> = (0..Self::ACROSS)
+            .flat_map(|i| (0..Self::ACROSS).map(move |k| (i, k)))
+            .map(|(i, k)| lattice.column(origin.x + i, origin.z + k))
+            .collect();
+        let tops = columns.iter().map(Column::top).collect();
+        Self {
+            origin,
+            columns,
+            tops,
+        }
     }
-    // How far below the exposed top of its run of solid cells this one is, if it is near one.
-    let depth = (0..=DIRT_DEPTH).find(|&depth| !column.solid(y + depth + 1));
-    match depth {
-        Some(depth) if y + depth >= ROCK_LINE => Block::Stone,
-        Some(0) => Block::Grass,
-        Some(_) => Block::Dirt,
-        None => Block::Stone,
+
+    fn index(&self, x: i32, z: i32) -> usize {
+        let (i, k) = (x - self.origin.x, z - self.origin.z);
+        debug_assert!((0..Self::ACROSS).contains(&i) && (0..Self::ACROSS).contains(&k));
+        (i * Self::ACROSS + k) as usize
+    }
+
+    fn column(&self, x: i32, z: i32) -> &Column {
+        &self.columns[self.index(x, z)]
+    }
+
+    fn top(&self, x: i32, z: i32) -> i32 {
+        self.tops[self.index(x, z)]
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Biome {
+    Ocean,
+    Beach,
+    Hills,
+    Forest,
+    Plains,
+}
+
+impl Biome {
+    fn classify(top: i32, relief: f32, humidity: f32) -> Self {
+        if top < SEA_LEVEL - 1 {
+            Biome::Ocean
+        } else if top <= SEA_LEVEL + 2 && relief < BEACH_RELIEF {
+            Biome::Beach
+        } else if relief > HILLS_RELIEF {
+            Biome::Hills
+        } else if humidity > FOREST_HUMIDITY {
+            Biome::Forest
+        } else {
+            Biome::Plains
+        }
+    }
+}
+
+/// Temperature and humidity in `0..=1` at one column.
+fn climate(seed: u32, x: i32, z: i32) -> (f32, f32) {
+    let column = Vec2::new(x as f32, z as f32);
+    let field = |salt: u32| {
+        let broad = fractal(3, |frequency, octave| {
+            gradient_2d(seed ^ salt ^ octave, column * frequency / CLIMATE_SCALE)
+        });
+        let jitter = gradient_2d(seed ^ salt ^ JITTER_SALT, column / JITTER_SCALE);
+        (0.5 + CLIMATE_SPREAD * broad + JITTER * jitter).clamp(0.0, 1.0)
+    };
+    (field(TEMPERATURE_SALT), field(HUMIDITY_SALT))
+}
+
+fn snowy(temperature: f32, y: i32) -> bool {
+    y >= SEA_LEVEL && temperature < LAPSE * (y - SEA_LEVEL) as f32
+}
+
+/// What the surfaces of one column are made of.
+struct Surface {
+    top: i32,
+    biome: Biome,
+    temperature: f32,
+    /// How many blocks deep each surface run is.
+    run: i32,
+    /// Whether the column top stands a cliff's height above or below a neighbour's.
+    cliff: bool,
+    /// What deep sea floor is made of here.
+    seabed: Block,
+    /// Whether beach here is gravel rather than sand.
+    shingle: bool,
+    /// Whether high hills are bare rock here.
+    high_rock: bool,
+}
+
+impl Surface {
+    fn at(seed: u32, x: i32, z: i32, columns: &Neighbourhood) -> Self {
+        let top = columns.top(x, z);
+        let (temperature, humidity) = climate(seed, x, z);
+        let point = Vec2::new(x as f32, z as f32);
+        let noise = |salt: u32, scale: f32| {
+            fractal(2, |frequency, octave| {
+                gradient_2d(seed ^ salt ^ octave, point * frequency / scale)
+            })
+        };
+        let (shallowest, deepest) = (*RUN_DEPTHS.start(), *RUN_DEPTHS.end());
+        let run = shallowest
+            + ((noise(RUN_SALT, RUN_SCALE) + 0.5) * (deepest - shallowest) as f32).round() as i32;
+        let seabed = match noise(SEABED_SALT, SEABED_SCALE) {
+            n if n > SEABED_PATCH => Block::Gravel,
+            n if n < -SEABED_PATCH => Block::Dirt,
+            _ => Block::Sand,
+        };
+        let cliff = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .iter()
+            .any(|(dx, dz)| (columns.top(x + dx, z + dz) - top).abs() >= CLIFF_STEP);
+        Self {
+            top,
+            biome: Biome::classify(top, columns.column(x, z).relief, humidity),
+            temperature,
+            run: run.clamp(shallowest, deepest),
+            cliff,
+            seabed,
+            shingle: noise(SHINGLE_SALT, SHINGLE_SCALE) > SHINGLE,
+            high_rock: noise(HIGH_ROCK_SALT, HIGH_ROCK_SCALE) > 0.0,
+        }
+    }
+
+    /// Each exposed top, a solid cell with air above, heads a run of solid cells beneath it whose
+    /// material its height and this column decide; everything else solid is stone. Ledges and
+    /// floating land are dressed as well as the column top.
+    fn block(&self, column: &Column, y: i32) -> Block {
+        if !column.solid(y) {
+            return Block::Air;
+        }
+        let Some(depth) = (0..self.run).find(|&depth| !column.solid(y + depth + 1)) else {
+            return Block::Stone;
+        };
+        let (top, beneath) = self.run_blocks(y + depth);
+        if depth == 0 { top } else { beneath }
+    }
+
+    /// The top block and the blocks beneath it for a surface whose exposed top is at `y`.
+    fn run_blocks(&self, y: i32) -> (Block, Block) {
+        // Cliffs are judged against neighbouring column tops, so only the column top can be one.
+        let cliff = self.cliff && y + 1 == self.top;
+        if snowy(self.temperature, y) {
+            return (Block::Snow, if cliff { Block::Stone } else { Block::Dirt });
+        }
+        if y < SEA_LEVEL - 1 {
+            let floor = if y >= SEA_LEVEL - 1 - SHALLOWS {
+                Block::Sand
+            } else {
+                self.seabed
+            };
+            return (floor, floor);
+        }
+        if self.biome == Biome::Beach && y <= SEA_LEVEL + 2 {
+            let shore = if self.shingle {
+                Block::Gravel
+            } else {
+                Block::Sand
+            };
+            return (shore, shore);
+        }
+        if cliff || (self.biome == Biome::Hills && y >= HIGH_ROCK_LINE && self.high_rock) {
+            return (Block::Stone, Block::Stone);
+        }
+        // Ground level with the sea surface outside a beach is still never grass.
+        if y < SEA_LEVEL {
+            return (Block::Sand, Block::Sand);
+        }
+        (Block::Grass, Block::Dirt)
     }
 }
 
@@ -150,6 +359,8 @@ struct Lattice {
     /// Samples along x and z.
     across: i32,
     samples: Vec<f32>,
+    /// Relief at each lattice column.
+    relief: Vec<f32>,
 }
 
 impl Lattice {
@@ -158,10 +369,12 @@ impl Lattice {
         let origin = (chunk_origin - LATTICE_STEP).with_y(0);
         let across = SIZE / LATTICE_STEP.x + 3;
         let mut samples = Vec::with_capacity((across * across) as usize * LEVELS);
+        let mut relief = Vec::with_capacity((across * across) as usize);
         for i in 0..across {
             for k in 0..across {
                 let (x, z) = (origin.x + i * LATTICE_STEP.x, origin.z + k * LATTICE_STEP.z);
                 let fields = Fields::at(seed, x, z);
+                relief.push(fields.relief);
                 for level in 0..LEVELS as i32 {
                     let y = level * LATTICE_STEP.y;
                     samples.push(fields.density(seed, x, y, z));
@@ -172,6 +385,7 @@ impl Lattice {
             origin,
             across,
             samples,
+            relief,
         }
     }
 
@@ -183,25 +397,27 @@ impl Lattice {
         let t = local - cell;
         let (i, k) = (cell.x as i32, cell.y as i32);
         debug_assert!(i >= 0 && k >= 0 && i + 1 < self.across && k + 1 < self.across);
-        let start = |i: i32, k: i32| (i * self.across + k) as usize * LEVELS;
-        let corners = [
-            start(i, k),
-            start(i + 1, k),
-            start(i, k + 1),
-            start(i + 1, k + 1),
-        ];
+        let corners = [(i, k), (i + 1, k), (i, k + 1), (i + 1, k + 1)]
+            .map(|(i, k)| (i * self.across + k) as usize);
+        let blend = |value: &dyn Fn(usize) -> f32| {
+            let [a, b, c, d] = corners.map(value);
+            lerp(lerp(a, b, t.x), lerp(c, d, t.x), t.y)
+        };
         let mut levels = [0.0; LEVELS];
         for (level, value) in levels.iter_mut().enumerate() {
-            let [a, b, c, d] = corners.map(|corner| self.samples[corner + level]);
-            *value = lerp(lerp(a, b, t.x), lerp(c, d, t.x), t.y);
+            *value = blend(&|corner| self.samples[corner * LEVELS + level]);
         }
-        Column { levels }
+        Column {
+            levels,
+            relief: blend(&|corner| self.relief[corner]),
+        }
     }
 }
 
-/// One column's density at each lattice level, linear in between.
+/// One column's density at each lattice level, linear in between, and its relief.
 struct Column {
     levels: [f32; LEVELS],
+    relief: f32,
 }
 
 impl Column {
@@ -221,7 +437,12 @@ impl Column {
 
     /// The height just above the highest solid cell, where a player can stand.
     fn top(&self) -> i32 {
-        (0..HEIGHT)
+        // Density is linear between levels, so a lattice cell with no positive end is all air.
+        let highest_solid_cell = (0..LEVELS - 1)
+            .rev()
+            .find(|&level| self.levels[level] > 0.0 || self.levels[level + 1] > 0.0)
+            .map_or(0, |level| (level + 1) as i32 * LATTICE_STEP.y);
+        (0..highest_solid_cell.max(BEDROCK_ROWS))
             .rev()
             .find(|&y| self.solid(y))
             .map_or(0, |y| y + 1)
@@ -232,6 +453,8 @@ impl Column {
 struct Fields {
     /// Height the ground tends towards.
     target: f32,
+    /// How much the column belongs to an upland region, in `0..=1`.
+    relief: f32,
     /// How strongly the 3D detail bends the ground away from the target.
     detail: f32,
 }
@@ -239,12 +462,13 @@ struct Fields {
 impl Fields {
     fn at(seed: u32, x: i32, z: i32) -> Self {
         let column = Vec2::new(x as f32, z as f32);
-        let elevation = fractal(4, |frequency, salt| {
-            gradient_2d(
-                seed ^ ELEVATION_SALT ^ salt,
-                column * frequency / ELEVATION_SCALE,
-            )
-        });
+        let elevation = ELEVATION_OFFSET
+            + fractal(4, |frequency, salt| {
+                gradient_2d(
+                    seed ^ ELEVATION_SALT ^ salt,
+                    column * frequency / ELEVATION_SCALE,
+                )
+            });
         let relief = smoothstep(
             RELIEF_START,
             RELIEF_FULL,
@@ -254,10 +478,16 @@ impl Fields {
         );
         Self {
             target: SEA_LEVEL as f32
-                + LOWLAND_ABOVE_SEA
-                + LOWLAND_SPREAD * elevation
+                + elevation
+                    * if elevation < 0.0 {
+                        SEA_SPREAD
+                    } else {
+                        LOWLAND_SPREAD
+                    }
+                + COAST_RISE * smoothstep(0.0, COAST_EDGE, elevation)
                 + UPLAND_RISE * relief,
             detail: lerp(PLAINS_DETAIL, UPLAND_DETAIL, relief),
+            relief,
         }
     }
 
@@ -538,6 +768,141 @@ mod tests {
             (border - inside).abs() <= inside * 0.25,
             "{border} vs {inside}"
         );
+    }
+
+    /// Dressed blocks of a 96x96 area in the middle of a 320-block world, clear of the wall, for
+    /// seeds 0-3. Built once and shared, since it is the slowest part of these tests.
+    fn dressed() -> &'static [World] {
+        static WORLDS: std::sync::OnceLock<Vec<World>> = std::sync::OnceLock::new();
+        WORLDS.get_or_init(|| {
+            (0..4)
+                .map(|seed| {
+                    let mut world = World::default();
+                    for cx in 7..13 {
+                        for cy in 0..HEIGHT / SIZE {
+                            for cz in 7..13 {
+                                let position = IVec3::new(cx, cy, cz);
+                                let full_world = IVec3::new(20, HEIGHT / SIZE, 20);
+                                world.insert(position, generate_chunk(seed, position, full_world));
+                            }
+                        }
+                    }
+                    world
+                })
+                .collect()
+        })
+    }
+
+    /// Every block of the dressed area with its seed and position.
+    fn dressed_blocks() -> impl Iterator<Item = (u32, IVec3, Block)> {
+        dressed().iter().zip(0..).flat_map(|(world, seed)| {
+            (112..208).flat_map(move |x| {
+                (0..HEIGHT).flat_map(move |y| {
+                    (112..208).map(move |z| {
+                        let position = IVec3::new(x, y, z);
+                        (seed, position, world.block(position))
+                    })
+                })
+            })
+        })
+    }
+
+    fn exposed(world: &World, position: IVec3) -> bool {
+        world.block(position) != Block::Air && world.block(position + IVec3::Y) == Block::Air
+    }
+
+    #[test]
+    fn biomes_follow_the_table() {
+        assert_eq!(Biome::classify(SEA_LEVEL - 2, 0.9, 0.9), Biome::Ocean);
+        assert_eq!(Biome::classify(SEA_LEVEL - 1, 0.0, 0.9), Biome::Beach);
+        assert_eq!(Biome::classify(SEA_LEVEL + 2, 0.0, 0.9), Biome::Beach);
+        assert_eq!(Biome::classify(SEA_LEVEL + 2, 0.9, 0.9), Biome::Hills);
+        assert_eq!(Biome::classify(SEA_LEVEL + 3, 0.0, 0.9), Biome::Forest);
+        assert_eq!(Biome::classify(SEA_LEVEL + 3, 0.0, 0.1), Biome::Plains);
+        for seed in 0..4 {
+            let columns = Neighbourhood::around(seed, IVec3::new(160, 0, 160));
+            for x in 160..176 {
+                for z in 160..176 {
+                    let surface = Surface::at(seed, x, z, &columns);
+                    let top = surface.top;
+                    match surface.biome {
+                        Biome::Ocean => assert!(top < SEA_LEVEL - 1),
+                        Biome::Beach => assert!((SEA_LEVEL - 1..=SEA_LEVEL + 2).contains(&top)),
+                        _ => assert!(top >= SEA_LEVEL - 1),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn materials_stay_where_they_belong() {
+        for (seed, position, block) in dressed_blocks() {
+            let y = position.y;
+            match block {
+                Block::Grass => assert!(y >= SEA_LEVEL, "grass at {position}"),
+                Block::Sand => assert!(y < SEA_LEVEL + 3, "sand at {position}"),
+                Block::Snow => {
+                    let (temperature, _) = climate(seed, position.x, position.z);
+                    assert!(snowy(temperature, y), "snow at {position}, seed {seed}");
+                }
+                Block::Cobblestone => panic!("cobblestone at {position}, away from the wall"),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn cobblestone_is_only_the_wall() {
+        let world = generate(CHUNKS, 5);
+        let extent = CHUNKS * SIZE;
+        for x in 0..extent.x {
+            for z in 0..extent.z {
+                let on_edge = x == 0 || z == 0 || x == extent.x - 1 || z == extent.z - 1;
+                for y in 0..HEIGHT {
+                    if world.block(IVec3::new(x, y, z)) == Block::Cobblestone {
+                        assert!(on_edge, "{x}, {y}, {z}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_surface_material_occurs() {
+        let mut found = Vec::new();
+        for (seed, position, block) in dressed_blocks() {
+            if exposed(&dressed()[seed as usize], position) {
+                found.push(block);
+            }
+        }
+        for block in [
+            Block::Grass,
+            Block::Dirt,
+            Block::Stone,
+            Block::Sand,
+            Block::Gravel,
+            Block::Snow,
+        ] {
+            assert!(found.contains(&block), "{block:?}");
+        }
+    }
+
+    #[test]
+    fn dressing_keeps_the_shape() {
+        for seed in 0..4 {
+            let world = &dressed()[seed as usize];
+            let lattice = Lattice::around(seed, IVec3::new(144, 0, 144));
+            for x in 144..160 {
+                for z in 144..160 {
+                    let column = lattice.column(x, z);
+                    for y in 0..HEIGHT {
+                        let solid = world.block(IVec3::new(x, y, z)) != Block::Air;
+                        assert_eq!(solid, column.solid(y), "{x}, {y}, {z}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
