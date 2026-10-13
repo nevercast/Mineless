@@ -78,7 +78,7 @@ impl Tile {
             Block::OakLog(_) => Tile::OakLog,
             Block::OakLeaves => Tile::OakLeaves,
             Block::Water => Tile::Water,
-            Block::Air => unreachable!("air has no faces"),
+            Block::Air | Block::WorldBorder => unreachable!("{block:?} has no faces"),
         }
     }
 }
@@ -155,7 +155,13 @@ impl Snapshot {
         for y in 0..PADDED {
             for z in 0..PADDED {
                 for x in 0..PADDED {
-                    blocks.push(world.block(origin + IVec3::new(x, y, z)));
+                    let block = world.block(origin + IVec3::new(x, y, z));
+                    // The border is drawn on its own, so terrain meets it as it would open air.
+                    blocks.push(if block == Block::WorldBorder {
+                        Block::Air
+                    } else {
+                        block
+                    });
                 }
             }
         }
@@ -392,6 +398,21 @@ mod tests {
         world.set_block(IVec3::new(3, 3, 3), Block::Stone);
         world.set_block(IVec3::new(4, 3, 3), Block::Stone);
         assert_eq!(face_count(&world, IVec3::ZERO), 10);
+    }
+
+    #[test]
+    fn the_world_border_has_no_faces_and_hides_nothing() {
+        let mut world = World::empty(IVec3::ONE);
+        let stone = IVec3::new(3, 3, 3);
+        world.set_block(stone, Block::Stone);
+        world.set_block(stone + IVec3::X, Block::WorldBorder);
+        world.set_block(stone + IVec3::new(1, 1, 0), Block::WorldBorder);
+        assert_eq!(face_count(&world, IVec3::ZERO), 6);
+        let top = &FACES[2];
+        assert_eq!(
+            face_occlusion(&Snapshot::new(&world, IVec3::ZERO), stone, top),
+            [0; 4]
+        );
     }
 
     #[test]

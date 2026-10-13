@@ -11,8 +11,8 @@ use crate::world::Axis;
 const CELL: i32 = 4;
 /// How far leaves reach from the trunk.
 const CANOPY_RADIUS: i32 = 2;
-/// Trees keep this far from the edge wall.
-const WALL_CLEARANCE: i32 = 3;
+/// Trees keep this far from the world border.
+const BORDER_CLEARANCE: i32 = 3;
 const TRUNK_HEIGHTS: std::ops::RangeInclusive<i32> = 4..=6;
 const TREE_SALT: u32 = 0x632b_e5ab;
 
@@ -57,8 +57,8 @@ impl Tree {
         extent: IVec3,
     ) -> Option<Tree> {
         let (x, z) = (column.x, column.y);
-        let inside_walls = |v: i32, edge: i32| (WALL_CLEARANCE..edge - WALL_CLEARANCE).contains(&v);
-        if !inside_walls(x, extent.x) || !inside_walls(z, extent.z) {
+        let inside = |v: i32, edge: i32| (BORDER_CLEARANCE..edge - BORDER_CLEARANCE).contains(&v);
+        if !inside(x, extent.x) || !inside(z, extent.z) {
             return None;
         }
         let surface = Surface::at(seed, x, z, columns);
