@@ -104,6 +104,7 @@ fn quarter_turned(block: Block, normal: IVec3) -> bool {
 }
 
 /// One chunk's triangles: solid terrain, and the water drawn over it afterwards.
+#[derive(Default)]
 pub struct ChunkMesh {
     pub opaque: Mesh,
     pub water: Mesh,
@@ -180,6 +181,17 @@ impl Snapshot {
 /// water cells or where it meets the ground. Neighbours are read from the world so faces
 /// between touching chunks are culled too.
 pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> ChunkMesh {
+    // A chunk of air has no faces, and nor does a chunk of solid blocks walled in by more of them.
+    let buried = |chunk: IVec3| {
+        world
+            .uniform_chunk(chunk)
+            .is_some_and(|block| block.is_solid() && block != Block::WorldBorder)
+    };
+    if world.uniform_chunk(chunk) == Some(Block::Air)
+        || buried(chunk) && FACES.iter().all(|face| buried(chunk + face.normal))
+    {
+        return ChunkMesh::default();
+    }
     let blocks = Snapshot::new(world, chunk);
     let mut opaque = Mesh::default();
     let mut water = Mesh::default();
@@ -262,6 +274,7 @@ fn push_face(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sim::world::{Extent, terrain};
 
     fn face_count(world: &World, chunk: IVec3) -> usize {
         build_chunk_mesh(world, chunk).opaque.indices.len() / 6
@@ -422,6 +435,42 @@ mod tests {
         world.set_block(IVec3::new(16, 0, 0), Block::Stone);
         assert_eq!(face_count(&world, IVec3::ZERO), 5);
         assert_eq!(face_count(&world, IVec3::X), 5);
+    }
+
+    /// Hashes the meshes of every chunk of a small generated world, recorded before chunks could
+    /// be stored as one block and before meshing skipped any, so neither changed what is drawn.
+    #[test]
+    fn meshes_of_a_generated_world_are_unchanged() {
+        let extent = Extent {
+            half_width: 24,
+            height: 160,
+        };
+        let world = terrain::generate(extent, 5);
+        let uniform: Vec<Block> = extent
+            .chunk_positions()
+            .filter_map(|chunk| world.uniform_chunk(chunk))
+            .collect();
+        assert!(uniform.contains(&Block::Air) && uniform.contains(&Block::Stone));
+        let sea_surface = |x, z| IVec3::new(x, terrain::SEA_LEVEL - 1, z);
+        let has_sea =
+            (-24..24).any(|x| (-24..24).any(|z| world.block(sea_surface(x, z)) == Block::Water));
+        assert!(has_sea);
+        let mut chunks: Vec<IVec3> = extent.chunk_positions().collect();
+        chunks.sort_by_key(|chunk| chunk.to_array());
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for chunk in chunks {
+            let mesh = build_chunk_mesh(&world, chunk);
+            for mesh in [&mesh.opaque, &mesh.water] {
+                let bytes = [
+                    bytemuck::cast_slice::<Vertex, u8>(&mesh.vertices),
+                    bytemuck::cast_slice(&mesh.indices),
+                ];
+                for &byte in bytes.concat().iter() {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+                }
+            }
+        }
+        assert_eq!(hash, 0x6f7b_23a7_2d2a_9601);
     }
 
     #[test]
