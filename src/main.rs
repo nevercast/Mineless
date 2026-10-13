@@ -216,10 +216,10 @@ fn set_mouse_capture(window: &Window, capture: bool) -> bool {
     grabbed
 }
 
-/// 320 blocks square, big enough that render costs show up, and 160 tall, which leaves room to
-/// build above the highest mountains.
+/// 2000 blocks square, from -1000 to 1000, generated whole on first load, and 160 tall, which
+/// leaves room to build above the highest mountains.
 const WORLD: Extent = Extent {
-    half_width: 160,
+    half_width: 1000,
     height: 160,
 };
 /// The world unless `--seed` picks another. This one shows sea, beach, uplands, forest and a
@@ -280,19 +280,19 @@ const MESHING_SLICE: Duration = Duration::from_millis(4);
 /// The world starts mid-morning.
 const START_TICKS: u64 = DAY_TICKS * 3 / 8;
 
-/// Blocks between neighbouring players in the starting grid.
+/// Blocks between neighbouring players in the starting grid, and players along each side of it.
 const PLAYER_SPACING: i32 = 64;
+const PLAYERS_ACROSS: i32 = 5;
 
-/// A player every `PLAYER_SPACING` blocks across the world, skins in turn, so ticks have a crowd
-/// to simulate. The first stands idle, the second drops from twelve blocks up and then stands
-/// idle too, and the rest walk.
+/// A grid of players round the origin, skins in turn, so ticks have a crowd to simulate. The
+/// first stands idle, the second drops from twelve blocks up and then stands idle too, and the
+/// rest walk.
 fn test_players(world: &World) -> Vec<Player> {
-    let across = 2 * WORLD.half_width / PLAYER_SPACING;
-    (0..across)
-        .flat_map(|x| (0..across).map(move |z| IVec2::new(x, z)))
+    (0..PLAYERS_ACROSS)
+        .flat_map(|x| (0..PLAYERS_ACROSS).map(move |z| IVec2::new(x, z)))
         .enumerate()
         .map(|(index, cell)| {
-            let column = cell * PLAYER_SPACING + PLAYER_SPACING / 2 - WORLD.half_width;
+            let column = (cell - PLAYERS_ACROSS / 2) * PLAYER_SPACING;
             let mut position = ground_at(world, column.x, column.y);
             if index == 1 {
                 position.y += 12.0;
@@ -426,9 +426,18 @@ mod tests {
 
     #[test]
     fn wanderer_stays_inside_the_world_border() {
-        let world = sim::world::terrain::generate(WORLD, SEED);
+        // Small enough to generate quickly in a debug build, with the outer players starting
+        // 32 blocks from its border.
+        let small_world = Extent {
+            half_width: 160,
+            height: WORLD.height,
+        };
+        let world = sim::world::terrain::generate(small_world, SEED);
         let mut players = test_players(&world);
-        let (low, high) = (WORLD.min().as_vec3() + 1.0, WORLD.max().as_vec3() - 1.0);
+        let (low, high) = (
+            small_world.min().as_vec3() + 1.0,
+            small_world.max().as_vec3() - 1.0,
+        );
         let camera = ground_at(&world, 0, 0);
         // An hour of simulation.
         for _ in 0..(3600.0 * TICK_RATE) as u32 {

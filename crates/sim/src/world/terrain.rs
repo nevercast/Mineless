@@ -804,7 +804,7 @@ mod tests {
         half_width: 24,
         height: HEIGHT + 2 * SIZE,
     };
-    /// The world the game starts with.
+    /// The 320-block world the showcase windows and the dressed area were picked in.
     const FULL_WORLD: Extent = Extent {
         half_width: 160,
         height: HEIGHT + 2 * SIZE,
@@ -1090,6 +1090,35 @@ mod tests {
                     assert_eq!(block == Block::WorldBorder, on_edge, "{x}, {y}, {z}");
                     assert_ne!(block, Block::Cobblestone, "{x}, {y}, {z}");
                     assert!(inside || block == Block::Air, "{x}, {y}, {z}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_2000_block_world_has_its_border_on_its_outermost_columns() {
+        let extent = Extent {
+            half_width: 1000,
+            height: HEIGHT + 2 * SIZE,
+        };
+        // The outermost chunks run from -1008 and to 1007, past the border at -1000 and 999.
+        for position in [
+            IVec3::new(-63, 3, 0),
+            IVec3::new(62, 0, 5),
+            IVec3::new(-2, 9, -63),
+            IVec3::new(40, 4, 62),
+            IVec3::new(62, 6, 62),
+        ] {
+            let chunk = generate_chunk(5, position, extent);
+            let origin = position * SIZE;
+            for local in (0..SIZE).flat_map(|x| (0..SIZE).map(move |z| IVec3::new(x, 0, z))) {
+                let (x, z) = (origin.x + local.x, origin.z + local.z);
+                let inside = (-1000..1000).contains(&x) && (-1000..1000).contains(&z);
+                let ring = inside && (x == -1000 || z == -1000 || x == 999 || z == 999);
+                for y in 0..SIZE {
+                    let block = chunk.get(local.x as usize, y as usize, local.z as usize);
+                    assert_eq!(block == Block::WorldBorder, ring, "{x}, {z}");
+                    assert!(inside || block == Block::Air, "{x}, {z}");
                 }
             }
         }
