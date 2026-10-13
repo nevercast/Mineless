@@ -2,7 +2,7 @@ use image::ImageFormat;
 use image::imageops::FilterType;
 use wgpu::util::DeviceExt;
 
-use crate::avatar::Skin;
+use sim::avatar::Skin;
 
 /// Every skin is scaled up to this size so they all fit one texture array. 128 is the 64x64
 /// Minecraft layout at twice the detail.

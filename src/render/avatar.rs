@@ -2,8 +2,10 @@ use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 use wgpu::util::DeviceExt;
 
+use sim::avatar::Avatar;
+
 use super::skins::SkinTextures;
-use crate::avatar::{self, Avatar, AvatarVertex, PART_COUNT};
+use crate::avatar::{self, AvatarVertex, PART_COUNT};
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
     wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Uint32];
@@ -132,7 +134,7 @@ impl AvatarRenderer {
             .iter()
             .enumerate()
             .map(|(index, avatar)| Instance {
-                parts: avatar.part_transforms(),
+                parts: avatar::part_transforms(avatar),
                 skin: avatar.skin as u32,
                 // Any spread of values keeps avatars sharing a skin from glowing in sync.
                 seed: index as f32 * 137.0,

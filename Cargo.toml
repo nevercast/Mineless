@@ -1,19 +1,33 @@
 [package]
 name = "mineless"
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.90"
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
 env_logger = "0.11"
-glam = { version = "0.34", features = ["bytemuck"] }
+glam = { workspace = true, features = ["bytemuck"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "1"
+sim = { path = "crates/sim" }
 wgpu = "30"
 winit = "0.30"
 
-[lints.clippy]
+[lints]
+workspace = true
+
+[workspace]
+members = ["crates/sim"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.90"
+
+[workspace.dependencies]
+glam = "0.34"
+
+[workspace.lints.clippy]
 cast_lossless = "warn"
 default_trait_access = "warn"
 manual_midpoint = "warn"

@@ -1,7 +1,8 @@
-//! The player avatar: where it stands and the blocky body it is drawn with.
+//! The blocky body a player avatar is drawn with.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{EulerRot, Mat4, Quat, Vec3, vec3};
+use sim::avatar::Avatar;
 
 /// Skin texels per block. Minecraft draws its 32-texel-tall player at 15/16 scale.
 const TEXELS_PER_BLOCK: f32 = 16.0 / 0.9375;
@@ -13,63 +14,27 @@ const SKIN_LAYOUT: f32 = 64.0;
 const LEG_SWING: f32 = 0.8;
 const ARM_SWING: f32 = 0.6;
 
-/// A skin an avatar can wear. Discriminants are layers in the renderer's skin array.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Skin {
-    Player,
-    Autumn,
-    CyberA,
-    CyberB,
-}
-
-impl Skin {
-    pub const ALL: [Skin; 4] = [Skin::Player, Skin::Autumn, Skin::CyberA, Skin::CyberB];
-}
-
-pub struct Avatar {
-    /// Centre of the feet.
-    pub position: Vec3,
-    /// Radians around +Y the body faces; zero faces -Z, like the camera.
-    pub yaw: f32,
-    pub pose: Pose,
-    pub skin: Skin,
-}
-
-/// How the body is held. Head angles are relative to the body.
-#[derive(Default)]
-pub struct Pose {
-    pub head_yaw: f32,
-    /// Radians above level.
-    pub head_pitch: f32,
-    /// How far arms and legs swing, from 0 standing still to 1 running.
-    pub swing: f32,
-    /// Where in the stride the limbs are, in radians.
-    pub swing_phase: f32,
-}
-
-impl Avatar {
-    /// One world transform per entry of `PARTS`, in the same order.
-    pub fn part_transforms(&self) -> [Mat4; PART_COUNT] {
-        let model = Mat4::from_rotation_translation(Quat::from_rotation_y(self.yaw), self.position);
-        let pose = &self.pose;
-        let limb = pose.swing_phase.sin() * pose.swing;
-        // Arms swing against the leg on their own side, as in a natural stride.
-        let rotations = [
-            Quat::from_euler(EulerRot::YXZ, pose.head_yaw, pose.head_pitch, 0.0),
-            Quat::IDENTITY,
-            Quat::from_rotation_x(-limb * ARM_SWING),
-            Quat::from_rotation_x(limb * ARM_SWING),
-            Quat::from_rotation_x(limb * LEG_SWING),
-            Quat::from_rotation_x(-limb * LEG_SWING),
-        ];
-        std::array::from_fn(|i| {
-            let pivot = PARTS[i].pivot / TEXELS_PER_BLOCK;
-            model
-                * Mat4::from_translation(pivot)
-                * Mat4::from_quat(rotations[i])
-                * Mat4::from_translation(-pivot)
-        })
-    }
+/// One world transform per entry of `PARTS`, in the same order.
+pub fn part_transforms(avatar: &Avatar) -> [Mat4; PART_COUNT] {
+    let model = Mat4::from_rotation_translation(Quat::from_rotation_y(avatar.yaw), avatar.position);
+    let pose = &avatar.pose;
+    let limb = pose.swing_phase.sin() * pose.swing;
+    // Arms swing against the leg on their own side, as in a natural stride.
+    let rotations = [
+        Quat::from_euler(EulerRot::YXZ, pose.head_yaw, pose.head_pitch, 0.0),
+        Quat::IDENTITY,
+        Quat::from_rotation_x(-limb * ARM_SWING),
+        Quat::from_rotation_x(limb * ARM_SWING),
+        Quat::from_rotation_x(limb * LEG_SWING),
+        Quat::from_rotation_x(-limb * LEG_SWING),
+    ];
+    std::array::from_fn(|i| {
+        let pivot = PARTS[i].pivot / TEXELS_PER_BLOCK;
+        model
+            * Mat4::from_translation(pivot)
+            * Mat4::from_quat(rotations[i])
+            * Mat4::from_translation(-pivot)
+    })
 }
 
 #[repr(C)]
@@ -201,6 +166,7 @@ fn push_box(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sim::avatar::{Pose, Skin};
 
     #[test]
     fn body_stands_on_its_feet_at_minecraft_height() {
@@ -243,11 +209,11 @@ mod tests {
             },
             skin: Skin::Player,
         };
-        for (part, transform) in PARTS.iter().zip(avatar.part_transforms()) {
+        for (part, transform) in PARTS.iter().zip(part_transforms(&avatar)) {
             let pivot = part.pivot / TEXELS_PER_BLOCK;
             assert!(transform.transform_point3(pivot).abs_diff_eq(pivot, 1e-5));
         }
-        let right_leg = avatar.part_transforms()[4];
+        let right_leg = part_transforms(&avatar)[4];
         let foot = right_leg.transform_point3(vec3(2.0, 0.0, 0.0) / TEXELS_PER_BLOCK);
         assert!(foot.z.abs() > 0.1, "a running leg leaves the vertical");
     }

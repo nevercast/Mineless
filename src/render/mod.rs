@@ -16,9 +16,9 @@ use avatar::AvatarRenderer;
 use chunk_meshes::ChunkMeshes;
 use texture::BlockTextures;
 
-use crate::avatar::Avatar;
 use crate::mesher::{Mesh, Vertex};
 use crate::sky::Sky;
+use sim::avatar::Avatar;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
