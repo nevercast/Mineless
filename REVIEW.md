@@ -9,7 +9,8 @@ Flag as blocking:
 - Rendering concerns (vertex layouts, GPU types, window input) leaking into `crates/sim`.
 - Platform-specific code without a Windows path.
 - A change wider than the PR's stated step.
-- Screenshots committed to the tree, or a PR with screenshots that lack a description.
+- Screenshots outside `screenshots/` or not named `YYYY-MM-DD-slug.jpg`, or a PR with
+  screenshots that lack a description.
 
 Flag as optional:
 - Naming that doesn't match nearby code.
