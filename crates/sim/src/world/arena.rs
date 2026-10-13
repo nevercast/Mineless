@@ -1,4 +1,5 @@
 //! A hand-shaped test arena: rolling ground with a few hills and dug pits inside a cobblestone wall.
+//! The hills and pits repeat in tiles, so an arena of any size has the same terrain throughout.
 
 use glam::{IVec3, Vec2};
 
@@ -26,6 +27,10 @@ const HILLS: [Mound; 3] = [
 ];
 
 const PITS: [Mound; 2] = [mound(44.0, 17.0, 5.0, -6.0), mound(31.0, 31.0, 3.5, -3.0)];
+
+/// Blocks across one tile of hills and pits. Every mound lies wholly inside it, so tiles meet
+/// seamlessly on flat ground.
+pub const TILE: i32 = 64;
 
 /// Grass on top of this many dirt blocks, then stone below.
 const DIRT_DEPTH: i32 = 3;
@@ -64,6 +69,7 @@ pub fn generate(chunks: IVec3, ground_height: i32, wall_height: i32) -> World {
 
 /// Total height change at a column from a set of mounds, each a smooth cosine bump.
 fn raise(mounds: &[Mound], column: Vec2) -> i32 {
+    let column = column.rem_euclid(Vec2::splat(TILE as f32));
     mounds
         .iter()
         .map(|mound| {
