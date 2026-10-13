@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec3};
@@ -188,21 +189,30 @@ impl Renderer {
         self.post.resize(&self.device, (width, height));
     }
 
-    /// `time` is seconds since midnight, for animation.
-    pub fn render(&mut self, camera: &Camera, sky: &Sky, time: f32, avatars: &[Avatar]) {
+    /// `time` is seconds since midnight, for animation. Returns how long the frame took to draw,
+    /// CPU and GPU together, or `None` if there was no frame to draw into.
+    pub fn render(
+        &mut self,
+        camera: &Camera,
+        sky: &Sky,
+        time: f32,
+        avatars: &[Avatar],
+    ) -> Option<Duration> {
+        // Acquiring the frame is where vsync blocks, so the draw time starts after it.
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 drop(frame);
                 self.surface.configure(&self.device, &self.config);
-                return;
+                return None;
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
-                return;
+                return None;
             }
-            _ => return,
+            _ => return None,
         };
+        let draw_start = Instant::now();
         let view_projection =
             camera.view_projection(self.config.width as f32 / self.config.height as f32);
         self.queue.write_buffer(
@@ -270,7 +280,13 @@ impl Renderer {
         }
         self.post.draw(&mut encoder, &view);
         self.queue.submit([encoder.finish()]);
+        // Waiting for the GPU to finish puts its work in the draw time. It gives up overlapping
+        // one frame's GPU work with the next frame's CPU work, which costs nothing while vsync
+        // paces the frames. A failed wait means a lost device, which the next frame reports.
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        let draw = draw_start.elapsed();
         self.queue.present(frame);
+        Some(draw)
     }
 }
 
