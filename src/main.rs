@@ -38,29 +38,28 @@ struct App {
     timings: Timings,
 }
 
-/// Frame, render and tick times summed over about a second, then shown in the window title so
-/// performance changes have numbers to compare.
+/// Frame rate, draw time and tick time over about a second, then shown in the window title so
+/// performance changes have numbers to compare. Draw time leaves out waiting for vsync.
 #[derive(Default)]
 struct Timings {
     frames: u32,
     frame_seconds: f32,
-    worst_frame_seconds: f32,
-    render_seconds: f32,
+    draws: u32,
+    draw_seconds: f32,
+    worst_draw_seconds: f32,
     ticks: u32,
     tick_seconds: f32,
 }
 
 impl Timings {
     fn title(&self) -> String {
-        let frames = self.frames.max(1) as f32;
-        let ms = |seconds: f32, count: f32| seconds * 1000.0 / count;
+        let ms = |seconds: f32, count: u32| seconds * 1000.0 / count.max(1) as f32;
         format!(
-            "Mineless | {:.0} fps | frame {:.1} ms, worst {:.1} ms | render {:.1} ms | tick {:.2} ms",
-            frames / self.frame_seconds,
-            ms(self.frame_seconds, frames),
-            ms(self.worst_frame_seconds, 1.0),
-            ms(self.render_seconds, frames),
-            ms(self.tick_seconds, self.ticks.max(1) as f32),
+            "Mineless | {:.0} fps | draw {:.1} ms, worst {:.1} ms | tick {:.2} ms",
+            self.frames as f32 / self.frame_seconds,
+            ms(self.draw_seconds, self.draws),
+            ms(self.worst_draw_seconds, 1),
+            ms(self.tick_seconds, self.ticks),
         )
     }
 }
@@ -122,18 +121,21 @@ impl ApplicationHandler for App {
                 let alpha = self.unsimulated * TICK_RATE;
                 let avatars: Vec<Avatar> = self.players.iter().map(|p| p.avatar(alpha)).collect();
                 let day_fraction = ((self.ticks % DAY_TICKS) as f32 + alpha) / DAY_TICKS as f32;
-                let render_start = Instant::now();
-                renderer.render(
+                let draw = renderer.render(
                     &self.camera,
                     &Sky::at(day_fraction),
                     day_fraction * DAY_TICKS as f32 / TICK_RATE,
                     &avatars,
                 );
                 let timings = &mut self.timings;
-                timings.render_seconds += render_start.elapsed().as_secs_f32();
                 timings.frames += 1;
                 timings.frame_seconds += seconds;
-                timings.worst_frame_seconds = timings.worst_frame_seconds.max(seconds);
+                if let Some(draw) = draw {
+                    let draw = draw.as_secs_f32();
+                    timings.draws += 1;
+                    timings.draw_seconds += draw;
+                    timings.worst_draw_seconds = timings.worst_draw_seconds.max(draw);
+                }
                 if timings.frame_seconds >= 1.0 {
                     window.set_title(&timings.title());
                     *timings = Timings::default();
