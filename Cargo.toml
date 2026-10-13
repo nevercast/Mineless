@@ -34,3 +34,8 @@ manual_midpoint = "warn"
 semicolon_if_nothing_returned = "warn"
 too_many_lines = "warn"
 unwrap_used = "warn"
+
+# Dependencies are rarely stepped through but decode the textures and drive the GPU every frame,
+# so debug builds optimise them and leave only our own code unoptimised.
+[profile.dev.package."*"]
+opt-level = 2
