@@ -26,6 +26,9 @@ const FOG_START_PER_BLOCK: f32 = 2.0;
 /// higher. Lowlands fade out by about 350 blocks; peaks stay crisp from the valleys.
 const FOG_DENSITY: f32 = 0.018;
 const FOG_FALLOFF: f32 = 20.0;
+/// Nothing is drawn past `VIEW_DISTANCE` horizontally, so over this last share of it fog closes
+/// in fully however clear the air, and the edge of the drawn area never shows.
+const VIEW_EDGE_FADE: f32 = 0.25;
 
 @group(0) @binding(0)
 var<uniform> frame: Frame;
@@ -37,7 +40,8 @@ struct SceneOutput {
 };
 
 /// How much fog covers a fragment, from 0 near the camera towards 1. Haze is gathered along the
-/// view ray past the clear stretch, at the ray's mean density between its two ends' heights.
+/// view ray past the clear stretch, at the ray's mean density between its two ends' heights,
+/// and fog is complete by the view distance.
 fn fog(world_position: vec3<f32>) -> f32 {
     let camera = frame.camera_position;
     let clear = FOG_START + FOG_START_PER_BLOCK * max(camera.y - SEA_LEVEL, 0.0);
@@ -48,7 +52,12 @@ fn fog(world_position: vec3<f32>) -> f32 {
     if abs(b - a) > 1e-3 {
         density = (exp(-a) - exp(-b)) / (b - a);
     }
-    return 1.0 - exp(-FOG_DENSITY * hazy * density);
+    let edge = smoothstep(
+        VIEW_DISTANCE * (1.0 - VIEW_EDGE_FADE),
+        VIEW_DISTANCE,
+        distance(world_position.xz, camera.xz),
+    );
+    return max(1.0 - exp(-FOG_DENSITY * hazy * density), edge);
 }
 
 /// Fogs the scene output. Glow fades with distance too, so far avatars don't bloom through fog.

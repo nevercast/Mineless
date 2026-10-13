@@ -1,5 +1,6 @@
 mod avatar;
 mod loading;
+mod meshed_area;
 mod mesher;
 mod render;
 mod sky;
@@ -15,8 +16,9 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use glam::{IVec2, Vec2, Vec3, vec3};
+use glam::{IVec2, Vec2, Vec3, Vec3Swizzles, vec3};
 use loading::Loading;
+use meshed_area::MeshedArea;
 use render::{Camera, Renderer};
 use sim::avatar::{Avatar, Skin};
 use sim::player::{JUMP_HEIGHTS, Player, TICK_RATE};
@@ -29,6 +31,7 @@ struct App {
     seed: u32,
     /// The world still being built, until play starts.
     loading: Option<Loading>,
+    meshed: MeshedArea,
     /// When the loading screen was last drawn. Drawing waits for vsync, so the screen is only
     /// redrawn now and then and the frames in between go to loading.
     loading_drawn: Option<Instant>,
@@ -113,7 +116,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested if self.loading.is_some() => {
                 let loading = self.loading.as_mut().expect("checked by the match guard");
-                if loading.work(&mut self.world, renderer, LOADING_SLICE) {
+                if loading.work(&mut self.world, &mut self.meshed, renderer, LOADING_SLICE) {
                     self.loading = None;
                     eprintln!(
                         "Playable after {:.2} s",
@@ -143,6 +146,9 @@ impl ApplicationHandler for App {
                 let seconds = (now - self.last_frame).as_secs_f32();
                 self.last_frame = now;
                 self.spectator.update(&mut self.camera, seconds);
+                let camera = self.camera.position.xz();
+                self.meshed
+                    .update(&self.world, renderer, camera, MESHING_SLICE);
                 // Simulate in fixed ticks; a long stall drops time rather than ticking to catch up.
                 self.unsimulated = (self.unsimulated + seconds).min(MAX_CATCH_UP);
                 while self.unsimulated >= 1.0 / TICK_RATE {
@@ -267,6 +273,9 @@ const MAX_CATCH_UP: f32 = 0.25;
 /// stays responsive.
 const LOADING_SLICE: Duration = Duration::from_millis(12);
 const LOADING_SCREEN_INTERVAL: Duration = Duration::from_millis(100);
+/// Meshing done per frame as the camera brings chunks into range: far chunks may appear a
+/// little late, but the frame rate doesn't hitch.
+const MESHING_SLICE: Duration = Duration::from_millis(4);
 
 /// The world starts mid-morning.
 const START_TICKS: u64 = DAY_TICKS * 3 / 8;
@@ -355,7 +364,8 @@ fn main() {
     let mut app = App {
         world: World::default(),
         seed,
-        loading: Some(Loading::new(WORLD, seed)),
+        loading: Some(Loading::new(WORLD, seed, START_POSITION.xz())),
+        meshed: MeshedArea::new(WORLD),
         loading_drawn: None,
         launched,
         players: Vec::new(),

@@ -3,11 +3,11 @@
 
 use std::time::{Duration, Instant};
 
-use glam::IVec3;
+use glam::Vec2;
 use sim::world::terrain::{Generation, Stage};
 use sim::world::{Extent, World};
 
-use crate::mesher;
+use crate::meshed_area::MeshedArea;
 use crate::render::Renderer;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -29,19 +29,22 @@ impl Phase {
 
 pub struct Loading {
     generation: Generation,
-    /// Chunks to mesh, known once generation is done.
-    to_mesh: Vec<IVec3>,
-    meshed: usize,
+    /// Where the camera will start, so the meshes around it are ready for the first frame.
+    camera: Vec2,
+    /// Columns to mesh and how many of them are left, known once generation is done.
+    to_mesh: usize,
+    unmeshed: usize,
     phase: Phase,
     phase_start: Instant,
 }
 
 impl Loading {
-    pub fn new(extent: Extent, seed: u32) -> Self {
+    pub fn new(extent: Extent, seed: u32, camera: Vec2) -> Self {
         Self {
             generation: Generation::new(extent, seed),
-            to_mesh: Vec::new(),
-            meshed: 0,
+            camera,
+            to_mesh: 0,
+            unmeshed: 0,
             phase: Phase::ShapingLand,
             phase_start: Instant::now(),
         }
@@ -54,24 +57,23 @@ impl Loading {
     /// The fraction of the current phase done, in `0..=1`.
     pub fn progress(&self) -> f32 {
         match self.phase {
-            Phase::BuildingMeshes => self.meshed as f32 / self.to_mesh.len().max(1) as f32,
+            Phase::BuildingMeshes => 1.0 - self.unmeshed as f32 / self.to_mesh.max(1) as f32,
             _ => self.generation.progress(),
         }
     }
 
-    /// Builds `world` and its meshes for about `budget`. Returns whether loading is finished.
-    /// Prints how long each phase took as it ends.
-    pub fn work(&mut self, world: &mut World, renderer: &mut Renderer, budget: Duration) -> bool {
-        let start = Instant::now();
+    /// Builds `world` and the meshes in view of the start camera for about `budget`. Returns
+    /// whether loading is finished. Prints how long each phase took as it ends.
+    pub fn work(
+        &mut self,
+        world: &mut World,
+        area: &mut MeshedArea,
+        renderer: &mut Renderer,
+        budget: Duration,
+    ) -> bool {
         if self.phase == Phase::BuildingMeshes {
-            while let Some(&chunk) = self.to_mesh.get(self.meshed) {
-                renderer.upload_chunk_mesh(chunk, &mesher::build_chunk_mesh(world, chunk));
-                self.meshed += 1;
-                if start.elapsed() >= budget {
-                    break;
-                }
-            }
-            let finished = self.meshed == self.to_mesh.len();
+            self.unmeshed = area.update(world, renderer, self.camera, budget);
+            let finished = self.unmeshed == 0;
             if finished {
                 self.report_phase();
             }
@@ -89,7 +91,8 @@ impl Loading {
             self.phase_start = Instant::now();
         }
         if phase == Phase::BuildingMeshes {
-            self.to_mesh = world.chunk_positions().collect();
+            self.to_mesh = area.in_range(self.camera);
+            self.unmeshed = self.to_mesh;
         }
         false
     }

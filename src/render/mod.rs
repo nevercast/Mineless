@@ -26,6 +26,7 @@ use post::{HDR_FORMAT, PostProcess};
 use skybox::Skybox;
 use texture::BlockTextures;
 
+use crate::meshed_area::VIEW_DISTANCE;
 use crate::mesher::{ChunkMesh, Vertex};
 use crate::sky::Sky;
 use sim::avatar::Avatar;
@@ -377,13 +378,18 @@ enum Layer {
 }
 
 /// A shader whose source is `body` after frame.wgsl's shared uniforms, lighting and fog. Fog is
-/// densest at sea level, so the shader takes it from the sim rather than a copy.
+/// densest at sea level and complete at the view distance, so the shader takes both from where
+/// they are defined rather than copies.
 fn frame_shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule {
-    let sea_level = format!("const SEA_LEVEL: f32 = {}.0;\n", terrain::SEA_LEVEL);
+    let constants = format!(
+        "const SEA_LEVEL: f32 = {}.0;\nconst VIEW_DISTANCE: f32 = {:.1};\n",
+        terrain::SEA_LEVEL,
+        VIEW_DISTANCE
+    );
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(
-            [&sea_level, include_str!("frame.wgsl"), body]
+            [&constants, include_str!("frame.wgsl"), body]
                 .concat()
                 .into(),
         ),
