@@ -7,6 +7,7 @@ mod sky;
 mod spectator;
 mod world;
 
+use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -87,7 +88,7 @@ impl ApplicationHandler for App {
                     self.unsimulated -= 1.0 / TICK_RATE;
                     self.ticks += 1;
                     for player in &mut self.players {
-                        wander(player, &self.world);
+                        wander(player, &self.world, self.camera.position);
                     }
                 }
                 let alpha = self.unsimulated * TICK_RATE;
@@ -145,35 +146,33 @@ const MAX_CATCH_UP: f32 = 0.25;
 /// The world starts mid-morning.
 const START_TICKS: u64 = DAY_TICKS * 3 / 8;
 
-/// Four players near the centre, one in each skin: one dropped from twelve blocks up to hop in
-/// place looking up and to its left, one hopping on the ground, and two walkers, one of which
-/// starts by walking into the centre pit and jumping out, looking down and to its right.
+/// Four players near the centre, one in each skin: one dropped from twelve blocks up and one on
+/// the ground, both standing idle, and two walkers, one of which starts by walking into the centre
+/// pit and jumping out, looking down and to its right.
 fn test_players() -> Vec<Player> {
     let ground = GROUND_HEIGHT as f32;
-    let mut watcher = Player::new(
+    let dropped = Player::new(
         vec3(37.5, ground + 12.0, 27.5),
         -135f32.to_radians(),
         Skin::Player,
     );
-    watcher.controls.head_yaw = 0.6;
-    watcher.controls.head_pitch = 0.5;
-    let hopper = Player::new(vec3(35.5, ground, 31.5), -135f32.to_radians(), Skin::Autumn);
+    let idler = Player::new(vec3(35.5, ground, 31.5), -135f32.to_radians(), Skin::Autumn);
     let mut walker = Player::new(vec3(39.5, ground, 25.5), 123f32.to_radians(), Skin::CyberA);
     walker.controls.head_yaw = -0.35;
     walker.controls.head_pitch = -0.3;
     walker.controls.walk = Vec2::Y;
     let mut stroller = Player::new(vec3(30.5, ground, 38.5), -100f32.to_radians(), Skin::CyberB);
     stroller.controls.walk = Vec2::Y;
-    vec![watcher, hopper, walker, stroller]
+    vec![dropped, idler, walker, stroller]
 }
 
 /// Stand-in agent: drives a player only through its controls, as a real agent will. Walkers walk
 /// forward, jump at anything in the way, and turn away if it's still blocking on the way back
-/// down. Everyone else hops on the spot as low as a jump goes.
-fn wander(player: &mut Player, world: &World) {
+/// down. Everyone else stands still and watches the spectator's camera when it comes close.
+fn wander(player: &mut Player, world: &World, camera: Vec3) {
     let blocked = player.tick(world);
     if player.controls.walk == Vec2::ZERO {
-        player.controls.jump = Some(*JUMP_HEIGHTS.start());
+        look_toward(player, camera);
     } else if blocked.x || blocked.z {
         if player.is_on_ground() {
             player.controls.jump = Some(*JUMP_HEIGHTS.end());
@@ -181,6 +180,36 @@ fn wander(player: &mut Player, world: &World) {
             player.controls.yaw += 100f32.to_radians();
         }
     }
+}
+
+/// Blocks from the feet to the eyes.
+const EYE_HEIGHT: f32 = 1.62;
+/// How close the camera must come before an idle player looks at it.
+const LOOK_RANGE: f32 = 8.0;
+/// How far the head turns from the body, side to side and up and down.
+const HEAD_YAW_LIMIT: f32 = 70f32.to_radians();
+const HEAD_PITCH_LIMIT: f32 = 45f32.to_radians();
+/// Fraction of the remaining turn the head makes each tick.
+const HEAD_EASE: f32 = 0.3;
+
+/// Turns the head toward `target` as far as the neck allows while it's within `LOOK_RANGE`, and
+/// back to straight ahead otherwise.
+fn look_toward(player: &mut Player, target: Vec3) {
+    let to_target = target - (player.avatar(1.0).position + Vec3::Y * EYE_HEIGHT);
+    let (yaw, pitch) = if to_target.length() < LOOK_RANGE {
+        let yaw = (-to_target.x).atan2(-to_target.z) - player.controls.yaw;
+        let yaw = (yaw + PI).rem_euclid(TAU) - PI;
+        let pitch = to_target.y.atan2(to_target.with_y(0.0).length());
+        (
+            yaw.clamp(-HEAD_YAW_LIMIT, HEAD_YAW_LIMIT),
+            pitch.clamp(-HEAD_PITCH_LIMIT, HEAD_PITCH_LIMIT),
+        )
+    } else {
+        (0.0, 0.0)
+    };
+    let controls = &mut player.controls;
+    controls.head_yaw += (yaw - controls.head_yaw) * HEAD_EASE;
+    controls.head_pitch += (pitch - controls.head_pitch) * HEAD_EASE;
 }
 
 fn main() {
@@ -213,11 +242,36 @@ mod tests {
         // An hour of simulation.
         for _ in 0..(3600.0 * TICK_RATE) as u32 {
             for player in &mut players {
-                wander(player, &world);
+                wander(player, &world, CENTRE);
                 let position = player.avatar(1.0).position;
                 assert!(position.x > 1.0 && position.z > 1.0, "{position}");
                 assert!(position.x < inside.x && position.z < inside.z, "{position}");
             }
         }
+    }
+
+    #[test]
+    fn idle_player_looks_at_a_nearby_camera_within_its_neck_limits() {
+        let mut player = Player::new(Vec3::ZERO, 0.0, Skin::Player);
+        // Up and to the left of a player facing -Z.
+        let camera = vec3(-2.0, EYE_HEIGHT + 2.0, -2.0);
+        for _ in 0..50 {
+            look_toward(&mut player, camera);
+        }
+        let controls = &player.controls;
+        assert!((controls.head_yaw - 45f32.to_radians()).abs() < 1e-3);
+        assert!(controls.head_pitch > 0.5 && controls.head_pitch <= HEAD_PITCH_LIMIT);
+
+        // Directly behind: the head turns as far as it can.
+        for _ in 0..50 {
+            look_toward(&mut player, vec3(0.5, EYE_HEIGHT, 3.0));
+        }
+        assert!((player.controls.head_yaw.abs() - HEAD_YAW_LIMIT).abs() < 1e-3);
+
+        // Out of range: back to straight ahead.
+        for _ in 0..50 {
+            look_toward(&mut player, vec3(0.0, EYE_HEIGHT, -LOOK_RANGE * 2.0));
+        }
+        assert!(player.controls.head_yaw.abs() < 1e-3);
     }
 }
