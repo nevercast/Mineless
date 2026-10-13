@@ -4,7 +4,7 @@ use wgpu::util::DeviceExt;
 use crate::avatar::{self, Avatar, AvatarVertex, PART_COUNT};
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32, 3 => Uint32];
+    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Uint32];
 const PART_TRANSFORM_SIZE: wgpu::BufferAddress = size_of::<Mat4>() as wgpu::BufferAddress;
 
 /// Every avatar shares one rest-pose mesh and is drawn as an instance of it. Each instance reads
@@ -26,7 +26,7 @@ impl AvatarRenderer {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        camera_layout: &wgpu::BindGroupLayout,
+        frame_layout: &wgpu::BindGroupLayout,
         color_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
     ) -> Self {
@@ -79,10 +79,10 @@ impl AvatarRenderer {
         let parts_buffer = create_parts_buffer(device, 1);
         let bind_group = create_bind_group(device, &layout, &parts_buffer, &skin, &sampler);
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("avatar.wgsl"));
+        let shader = super::frame_shader(device, "avatar", include_str!("avatar.wgsl"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("avatar"),
-            bind_group_layouts: &[Some(camera_layout), Some(&layout)],
+            bind_group_layouts: &[Some(frame_layout), Some(&layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -152,13 +152,13 @@ impl AvatarRenderer {
         self.instance_count = avatars.len() as u32;
     }
 
-    /// Draws everything given to the last `prepare`, with the camera bound at group 0.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass, camera: &wgpu::BindGroup) {
+    /// Draws everything given to the last `prepare`, with the frame uniforms bound at group 0.
+    pub fn draw(&self, pass: &mut wgpu::RenderPass, frame: &wgpu::BindGroup) {
         if self.instance_count == 0 {
             return;
         }
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, camera, &[]);
+        pass.set_bind_group(0, frame, &[]);
         pass.set_bind_group(1, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
