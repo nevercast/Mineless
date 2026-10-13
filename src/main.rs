@@ -173,16 +173,20 @@ fn set_mouse_capture(window: &Window, capture: bool) -> bool {
     grabbed
 }
 
-/// 20x6x20 chunks: 320 blocks square, big enough that render costs show up, and 96 tall, room
+/// 20x8x20 chunks: 320 blocks square, big enough that render costs show up, and 128 tall, room
 /// for the highest mountains.
-const WORLD_CHUNKS: IVec3 = IVec3::new(20, 6, 20);
-/// Fixed for now so every run, and every before-and-after measurement, sees the same world.
-const SEED: u32 = 0;
+const WORLD_CHUNKS: IVec3 = IVec3::new(20, 8, 20);
+/// Fixed for now so every run, and every before-and-after measurement, sees the same world. This
+/// one shows sea, beach, uplands, forest and a floating lump from the start view.
+const SEED: u32 = 142;
 
 /// The top of the ground at the centre of a column, where a player can stand.
-fn ground_at(x: i32, z: i32) -> Vec3 {
-    let height = world::terrain::surface_height(SEED, x, z);
-    vec3(x as f32 + 0.5, height as f32, z as f32 + 0.5)
+fn ground_at(world: &World, x: i32, z: i32) -> Vec3 {
+    vec3(
+        x as f32 + 0.5,
+        world.column_top(x, z) as f32,
+        z as f32 + 0.5,
+    )
 }
 
 const MAX_CATCH_UP: f32 = 0.25;
@@ -196,14 +200,14 @@ const PLAYER_SPACING: i32 = 64;
 /// A player every `PLAYER_SPACING` blocks across the world, skins in turn, so ticks have a crowd
 /// to simulate. The first stands idle, the second drops from twelve blocks up and then stands
 /// idle too, and the rest walk.
-fn test_players() -> Vec<Player> {
+fn test_players(world: &World) -> Vec<Player> {
     let across = WORLD_CHUNKS * world::CHUNK_SIZE as i32 / PLAYER_SPACING;
     (0..across.x)
         .flat_map(|x| (0..across.z).map(move |z| IVec2::new(x, z)))
         .enumerate()
         .map(|(index, cell)| {
             let column = cell * PLAYER_SPACING + PLAYER_SPACING / 2;
-            let mut position = ground_at(column.x, column.y);
+            let mut position = ground_at(world, column.x, column.y);
             if index == 1 {
                 position.y += 12.0;
             }
@@ -266,15 +270,16 @@ fn look_toward(player: &mut Player, target: Vec3) {
 fn main() {
     env_logger::init();
     let event_loop = EventLoop::new().expect("create event loop");
+    let world = world::terrain::generate(WORLD_CHUNKS, SEED);
     let mut app = App {
-        world: world::terrain::generate(WORLD_CHUNKS, SEED),
-        players: test_players(),
+        players: test_players(&world),
+        world,
         ticks: START_TICKS,
         unsimulated: 0.0,
         window: None,
         renderer: None,
-        // Over the plains, looking up at the mountain range in the middle of the seed's world.
-        camera: Camera::looking_at(vec3(245.0, 80.0, 240.0), vec3(165.0, 45.0, 165.0)),
+        // From the eastern plains across the bay to the island upland, its beaches and the forest.
+        camera: Camera::looking_at(vec3(235.0, 64.0, 235.0), vec3(140.0, 58.0, 150.0)),
         spectator: Spectator::default(),
         mouse_captured: false,
         last_frame: Instant::now(),
@@ -290,9 +295,9 @@ mod tests {
     #[test]
     fn wanderer_stays_inside_the_world_walls() {
         let world = world::terrain::generate(WORLD_CHUNKS, SEED);
-        let mut players = test_players();
+        let mut players = test_players(&world);
         let inside = (WORLD_CHUNKS * world::CHUNK_SIZE as i32).as_vec3() - 1.0;
-        let camera = ground_at(160, 160);
+        let camera = ground_at(&world, 160, 160);
         // An hour of simulation.
         for _ in 0..(3600.0 * TICK_RATE) as u32 {
             for player in &mut players {

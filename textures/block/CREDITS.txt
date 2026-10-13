@@ -1,3 +1,23 @@
 Block textures: Faithful 32x Java, https://faithfulpack.net/
 Source: https://github.com/Faithful-Resource-Pack/Faithful-32x-Java (java-latest branch)
 This is an unofficial selective subset. CREDITS.txt and LICENSE.txt cover this folder only.
+
+Files, from assets/minecraft/textures/block/:
+cobblestone.png
+dirt.png
+grass_block_side.png
+grass_block_side_overlay.png
+grass_block_top.png
+gravel.png
+oak_leaves.png
+oak_log.png
+oak_log_top.png
+sand.png
+snow.png
+stone.png
+water_still.png
+
+Modified at load time, not on disk:
+grass_block_top.png is tinted green.
+oak_leaves.png is tinted green and its transparent pixels are filled with dark green, making it opaque.
+water_still.png is cropped to its first animation frame, tinted blue and given a fixed opacity.

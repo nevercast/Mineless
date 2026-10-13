@@ -83,7 +83,7 @@ impl AvatarRenderer {
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &VERTEX_ATTRIBUTES,
             })],
-            true,
+            super::Layer::Opaque,
         );
 
         Self {

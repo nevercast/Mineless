@@ -45,14 +45,13 @@ impl Skybox {
         });
 
         let shader = super::frame_shader(device, "skybox", include_str!("skybox.wgsl"));
-        // Drawn first and never written to depth, so the world always covers it.
         let pipeline = super::scene_pipeline(
             device,
             "skybox",
             &shader,
             &[Some(frame_layout), Some(&layout)],
             &[],
-            false,
+            super::Layer::Background,
         );
         Self {
             pipeline,
