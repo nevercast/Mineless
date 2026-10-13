@@ -15,11 +15,16 @@ const SUN_TILT: f32 = 0.45;
 const SUN: Vec3 = vec3(1.0, 0.95, 0.85);
 const LOW_SUN: Vec3 = vec3(1.0, 0.55, 0.3);
 const MOON: Vec3 = vec3(0.12, 0.14, 0.22);
-const DAY_AMBIENT: Vec3 = vec3(0.42, 0.45, 0.5);
+/// The skybox's upper sky, brought up to the brightness the old grey ambient had, so shade picks
+/// up its blue.
+const DAY_AMBIENT: Vec3 = vec3(0.3, 0.45, 0.7);
 const NIGHT_AMBIENT: Vec3 = vec3(0.08, 0.09, 0.15);
-const DAY_SKY: Vec3 = vec3(0.53, 0.72, 0.92);
-const DUSK_SKY: Vec3 = vec3(0.85, 0.45, 0.25);
-const NIGHT_SKY: Vec3 = vec3(0.01, 0.012, 0.03);
+/// The skybox's pale band at the horizon.
+const DAY_HORIZON: Vec3 = vec3(0.5, 0.665, 0.888);
+const DUSK_HORIZON: Vec3 = vec3(0.85, 0.45, 0.25);
+const NIGHT_HORIZON: Vec3 = vec3(0.01, 0.012, 0.03);
+/// What the daytime skybox is multiplied by when the sun is low.
+const DUSK_TINT: Vec3 = vec3(1.0, 0.6, 0.4);
 
 /// The light falling on the world at one moment, in linear colour.
 pub struct Sky {
@@ -28,8 +33,12 @@ pub struct Sky {
     pub light_color: Vec3,
     /// Light from the whole sky, reaching every face whichever way it points.
     pub ambient: Vec3,
-    /// The colour behind everything.
-    pub color: Vec3,
+    /// The colour fog fades to, and the sky at night.
+    pub horizon: Vec3,
+    /// What the daytime skybox image is multiplied by.
+    pub skybox_tint: Vec3,
+    /// 1 by day and 0 at night: how much of the skybox shows over the horizon colour.
+    pub daylight: f32,
 }
 
 impl Sky {
@@ -52,7 +61,11 @@ impl Sky {
             light_direction,
             light_color,
             ambient: NIGHT_AMBIENT.lerp(DAY_AMBIENT, daylight),
-            color: NIGHT_SKY.lerp(DAY_SKY, daylight).lerp(DUSK_SKY, dusk * 0.5),
+            horizon: NIGHT_HORIZON
+                .lerp(DAY_HORIZON, daylight)
+                .lerp(DUSK_HORIZON, dusk * 0.5),
+            skybox_tint: Vec3::ONE.lerp(DUSK_TINT, dusk),
+            daylight,
         }
     }
 }

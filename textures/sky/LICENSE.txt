@@ -1,0 +1,5 @@
+Copyright (C) 2026 Josh (nevercast). All rights reserved.
+
+Everything in this folder is original artwork made for Mineless and is not covered by the
+Faithful licence in ../block/. No permission is granted to use, copy or modify it outside
+Mineless.
