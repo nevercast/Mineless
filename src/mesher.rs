@@ -9,7 +9,10 @@ use crate::world::{Block, CHUNK_SIZE, World};
 pub struct Vertex {
     pub position: [f32; 3],
     pub uv: [f32; 2],
-    pub shade: f32,
+    /// Outward unit normal of the face, for lighting.
+    pub normal: [f32; 3],
+    /// Ambient occlusion brightness, 1 for an open corner.
+    pub occlusion: f32,
     /// Which layer of the block texture array to sample.
     pub tile: u32,
 }
@@ -60,18 +63,16 @@ struct Face {
     /// Corners of a unit block at the origin, wound bottom-left, bottom-right, top-right, top-left
     /// as seen from outside, so each face maps the texture the same way up.
     corners: [[f32; 3]; 4],
-    /// Fixed directional brightness so faces read as 3D before there is real lighting.
-    shade: f32,
 }
 
 #[rustfmt::skip]
 const FACES: [Face; 6] = [
-    Face { normal: IVec3::new(1, 0, 0), corners: [[1., 0., 1.], [1., 0., 0.], [1., 1., 0.], [1., 1., 1.]], shade: 0.8 },
-    Face { normal: IVec3::new(-1, 0, 0), corners: [[0., 0., 0.], [0., 0., 1.], [0., 1., 1.], [0., 1., 0.]], shade: 0.8 },
-    Face { normal: IVec3::new(0, 1, 0), corners: [[0., 1., 1.], [1., 1., 1.], [1., 1., 0.], [0., 1., 0.]], shade: 1.0 },
-    Face { normal: IVec3::new(0, -1, 0), corners: [[0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [0., 0., 1.]], shade: 0.5 },
-    Face { normal: IVec3::new(0, 0, 1), corners: [[0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]], shade: 0.65 },
-    Face { normal: IVec3::new(0, 0, -1), corners: [[1., 0., 0.], [0., 0., 0.], [0., 1., 0.], [1., 1., 0.]], shade: 0.65 },
+    Face { normal: IVec3::new(1, 0, 0), corners: [[1., 0., 1.], [1., 0., 0.], [1., 1., 0.], [1., 1., 1.]] },
+    Face { normal: IVec3::new(-1, 0, 0), corners: [[0., 0., 0.], [0., 0., 1.], [0., 1., 1.], [0., 1., 0.]] },
+    Face { normal: IVec3::new(0, 1, 0), corners: [[0., 1., 1.], [1., 1., 1.], [1., 1., 0.], [0., 1., 0.]] },
+    Face { normal: IVec3::new(0, -1, 0), corners: [[0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [0., 0., 1.]] },
+    Face { normal: IVec3::new(0, 0, 1), corners: [[0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]] },
+    Face { normal: IVec3::new(0, 0, -1), corners: [[1., 0., 0.], [0., 0., 0.], [0., 1., 0.], [1., 1., 0.]] },
 ];
 
 const UVS: [[f32; 2]; 4] = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
@@ -136,7 +137,8 @@ fn push_face(mesh: &mut Mesh, face: &Face, position: IVec3, tile: Tile, occlusio
         mesh.vertices.push(Vertex {
             position: (origin + glam::Vec3::from_array(*corner)).to_array(),
             uv,
-            shade: face.shade * OCCLUSION_BRIGHTNESS[occluders],
+            normal: face.normal.as_vec3().to_array(),
+            occlusion: OCCLUSION_BRIGHTNESS[occluders],
             tile: tile as u32,
         });
     }

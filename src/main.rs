@@ -3,6 +3,7 @@ mod mesher;
 mod physics;
 mod player;
 mod render;
+mod sky;
 mod spectator;
 mod world;
 
@@ -19,12 +20,15 @@ use avatar::Avatar;
 use glam::{IVec3, Vec2, Vec3, vec3};
 use player::{JUMP_HEIGHTS, Player, TICK_RATE};
 use render::{Camera, Renderer};
+use sky::{DAY_TICKS, Sky};
 use spectator::Spectator;
 use world::World;
 
 struct App {
     world: World,
     players: Vec<Player>,
+    /// Simulation ticks since the world began.
+    ticks: u64,
     /// Seconds of simulation time owed but not yet ticked.
     unsimulated: f32,
     window: Option<Arc<Window>>,
@@ -81,14 +85,17 @@ impl ApplicationHandler for App {
                 self.unsimulated = (self.unsimulated + seconds).min(MAX_CATCH_UP);
                 while self.unsimulated >= 1.0 / TICK_RATE {
                     self.unsimulated -= 1.0 / TICK_RATE;
+                    self.ticks += 1;
                     for player in &mut self.players {
                         wander(player, &self.world);
                     }
                 }
                 let alpha = self.unsimulated * TICK_RATE;
                 let avatars: Vec<Avatar> = self.players.iter().map(|p| p.avatar(alpha)).collect();
+                let day_fraction = ((self.ticks % DAY_TICKS) as f32 + alpha) / DAY_TICKS as f32;
                 renderer.render(
                     self.camera.view_projection(renderer.aspect_ratio()),
+                    &Sky::at(day_fraction),
                     &avatars,
                 );
                 window.request_redraw();
@@ -134,6 +141,9 @@ const CENTRE: Vec3 = vec3(32.0, GROUND_HEIGHT as f32, 32.0);
 
 const MAX_CATCH_UP: f32 = 0.25;
 
+/// The world starts mid-morning.
+const START_TICKS: u64 = DAY_TICKS * 3 / 8;
+
 /// Two players near the centre: one dropped from twelve blocks up to hop in place looking up and
 /// to its left, one walking into the centre pit and jumping out, looking down and to its right.
 fn test_players() -> Vec<Player> {
@@ -172,6 +182,7 @@ fn main() {
     let mut app = App {
         world: world::arena::generate(WORLD_CHUNKS, GROUND_HEIGHT, WALL_HEIGHT),
         players: test_players(),
+        ticks: START_TICKS,
         unsimulated: 0.0,
         window: None,
         renderer: None,

@@ -61,7 +61,8 @@ impl Avatar {
 pub struct AvatarVertex {
     pub position: [f32; 3],
     pub uv: [f32; 2],
-    pub shade: f32,
+    /// Outward unit normal in the rest pose.
+    pub normal: [f32; 3],
     /// Index into `PARTS`, picking the transform the vertex moves with.
     pub part: u32,
 }
@@ -119,35 +120,17 @@ pub fn build_mesh() -> (Vec<AvatarVertex>, Vec<u16>) {
         let Vec3 { x: w, y: h, z: d } = part.size;
         let (u, v) = part.skin_origin;
         let centre = part.min + part.size / 2.0;
-        // Each face: outward normal, its right and up as seen from outside, its rect on the
-        // skin (left, top, width, height) and the same directional shade the terrain uses.
+        // Each face: outward normal, its right and up as seen from outside, and its rect on the
+        // skin (left, top, width, height).
         let faces = [
-            (Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y, (u + d, v + d, w, h), 0.8), // front
-            (
-                Vec3::Z,
-                Vec3::X,
-                Vec3::Y,
-                (u + 2.0 * d + w, v + d, w, h),
-                0.8,
-            ), // back
-            (Vec3::X, Vec3::NEG_Z, Vec3::Y, (u, v + d, d, h), 0.65),        // right
-            (
-                Vec3::NEG_X,
-                Vec3::Z,
-                Vec3::Y,
-                (u + d + w, v + d, d, h),
-                0.65,
-            ), // left
-            (Vec3::Y, Vec3::NEG_X, Vec3::Z, (u + d, v, w, d), 1.0),         // top
-            (
-                Vec3::NEG_Y,
-                Vec3::NEG_X,
-                Vec3::NEG_Z,
-                (u + d + w, v, w, d),
-                0.5,
-            ), // bottom
+            (Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y, (u + d, v + d, w, h)), // front
+            (Vec3::Z, Vec3::X, Vec3::Y, (u + 2.0 * d + w, v + d, w, h)), // back
+            (Vec3::X, Vec3::NEG_Z, Vec3::Y, (u, v + d, d, h)),         // right
+            (Vec3::NEG_X, Vec3::Z, Vec3::Y, (u + d + w, v + d, d, h)), // left
+            (Vec3::Y, Vec3::NEG_X, Vec3::Z, (u + d, v, w, d)),         // top
+            (Vec3::NEG_Y, Vec3::NEG_X, Vec3::NEG_Z, (u + d + w, v, w, d)), // bottom
         ];
-        for (normal, right, up, (left, top, width, height), shade) in faces {
+        for (normal, right, up, (left, top, width, height)) in faces {
             let half = part.size / 2.0 + vec3(part.grow, 0.0, part.grow);
             let face_centre = centre + normal * half;
             let right = right * half;
@@ -163,7 +146,7 @@ pub fn build_mesh() -> (Vec<AvatarVertex>, Vec<u16>) {
                 vertices.push(AvatarVertex {
                     position: (position / TEXELS_PER_BLOCK).into(),
                     uv: [s / SKIN_SIZE, t / SKIN_SIZE],
-                    shade,
+                    normal: normal.into(),
                     part: index as u32,
                 });
             }

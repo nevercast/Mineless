@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use glam::IVec3;
+use bytemuck::{Pod, Zeroable};
+use glam::{IVec3, Mat4, Vec3};
 use winit::window::Window;
 
 mod avatar;
@@ -16,21 +17,30 @@ use texture::BlockTextures;
 
 use crate::avatar::Avatar;
 use crate::mesher::{Mesh, Vertex};
+use crate::sky::Sky;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32, 3 => Uint32];
+const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Float32, 4 => Uint32
+];
 const VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
     array_stride: size_of::<Vertex>() as wgpu::BufferAddress,
     step_mode: wgpu::VertexStepMode::Vertex,
     attributes: &VERTEX_ATTRIBUTES,
 };
-const SKY: wgpu::Color = wgpu::Color {
-    r: 0.53,
-    g: 0.72,
-    b: 0.92,
-    a: 1.0,
-};
+
+/// Matches `Frame` in frame.wgsl, where each vec3 is padded out to 16 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct FrameUniforms {
+    view_projection: Mat4,
+    light_direction: Vec3,
+    _pad0: f32,
+    light_color: Vec3,
+    _pad1: f32,
+    ambient: Vec3,
+    _pad2: f32,
+}
 
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
@@ -41,8 +51,8 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     chunk_meshes: ChunkMeshes,
     avatar: AvatarRenderer,
-    transform_buffer: wgpu::Buffer,
-    transform_bind_group: wgpu::BindGroup,
+    frame_buffer: wgpu::Buffer,
+    frame_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
 }
 
@@ -71,17 +81,17 @@ impl Renderer {
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
 
-        let transform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("transform"),
-            size: size_of::<glam::Mat4>() as wgpu::BufferAddress,
+        let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame"),
+            size: size_of::<FrameUniforms>() as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let transform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("transform"),
+        let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("frame"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -90,26 +100,21 @@ impl Renderer {
                 count: None,
             }],
         });
-        let transform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("transform"),
-            layout: &transform_layout,
+        let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("frame"),
+            layout: &frame_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: transform_buffer.as_entire_binding(),
+                resource: frame_buffer.as_entire_binding(),
             }],
         });
 
         let textures = BlockTextures::load(&device, &queue);
         let pipeline =
-            create_chunk_pipeline(&device, &transform_layout, &textures.layout, config.format);
+            create_chunk_pipeline(&device, &frame_layout, &textures.layout, config.format);
 
-        let avatar = AvatarRenderer::new(
-            &device,
-            &queue,
-            &transform_layout,
-            config.format,
-            DEPTH_FORMAT,
-        );
+        let avatar =
+            AvatarRenderer::new(&device, &queue, &frame_layout, config.format, DEPTH_FORMAT);
         let depth_view = create_depth_view(&device, &config);
         Self {
             surface,
@@ -120,8 +125,8 @@ impl Renderer {
             pipeline,
             chunk_meshes: ChunkMeshes::default(),
             avatar,
-            transform_buffer,
-            transform_bind_group,
+            frame_buffer,
+            frame_bind_group,
             texture_bind_group: textures.bind_group,
         }
     }
@@ -145,7 +150,7 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, &self.config);
     }
 
-    pub fn render(&mut self, view_projection: glam::Mat4, avatars: &[Avatar]) {
+    pub fn render(&mut self, view_projection: Mat4, sky: &Sky, avatars: &[Avatar]) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -160,9 +165,15 @@ impl Renderer {
             _ => return,
         };
         self.queue.write_buffer(
-            &self.transform_buffer,
+            &self.frame_buffer,
             0,
-            bytemuck::bytes_of(&view_projection),
+            bytemuck::bytes_of(&FrameUniforms {
+                view_projection,
+                light_direction: sky.light_direction,
+                light_color: sky.light_color,
+                ambient: sky.ambient,
+                ..Zeroable::zeroed()
+            }),
         );
         self.avatar.prepare(&self.device, &self.queue, avatars);
 
@@ -180,7 +191,12 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(SKY),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: sky.color.x.into(),
+                            g: sky.color.y.into(),
+                            b: sky.color.z.into(),
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -197,30 +213,38 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.transform_bind_group, &[]);
+            pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
             for mesh in self.chunk_meshes.iter() {
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
-            self.avatar.draw(&mut pass, &self.transform_bind_group);
+            self.avatar.draw(&mut pass, &self.frame_bind_group);
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
     }
 }
 
+/// A shader whose source is `body` after frame.wgsl's shared uniforms and lighting.
+fn frame_shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl([include_str!("frame.wgsl"), body].concat().into()),
+    })
+}
+
 fn create_chunk_pipeline(
     device: &wgpu::Device,
-    transform_layout: &wgpu::BindGroupLayout,
+    frame_layout: &wgpu::BindGroupLayout,
     texture_layout: &wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+    let shader = frame_shader(device, "chunk", include_str!("shader.wgsl"));
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("chunk"),
-        bind_group_layouts: &[Some(transform_layout), Some(texture_layout)],
+        bind_group_layouts: &[Some(frame_layout), Some(texture_layout)],
         immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
