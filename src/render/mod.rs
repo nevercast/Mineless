@@ -16,6 +16,7 @@ mod texture;
 pub use camera::Camera;
 
 use avatar::AvatarRenderer;
+use camera::Frustum;
 use chunk_meshes::ChunkMeshes;
 use post::{HDR_FORMAT, PostProcess};
 use skybox::Skybox;
@@ -270,7 +271,7 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
-            for mesh in self.chunk_meshes.iter() {
+            for mesh in self.chunk_meshes.visible(&Frustum::new(view_projection)) {
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_vertex_buffer(1, mesh.origin_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
