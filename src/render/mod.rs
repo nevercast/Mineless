@@ -137,10 +137,17 @@ impl Renderer {
         });
 
         let textures = BlockTextures::load(&device, &queue);
-        let pipeline = create_chunk_pipeline(&device, &frame_layout, &textures.layout);
+        let pipeline = scene_pipeline(
+            &device,
+            "chunk",
+            &frame_shader(&device, "chunk", include_str!("shader.wgsl")),
+            &[Some(&frame_layout), Some(&textures.layout)],
+            Some(VERTEX_LAYOUT),
+            true,
+        );
 
-        let avatar = AvatarRenderer::new(&device, &queue, &frame_layout, DEPTH_FORMAT);
-        let skybox = Skybox::new(&device, &queue, &frame_layout, DEPTH_FORMAT);
+        let avatar = AvatarRenderer::new(&device, &queue, &frame_layout);
+        let skybox = Skybox::new(&device, &queue, &frame_layout);
         let depth_view = create_depth_view(&device, &config);
         let post = PostProcess::new(&device, config.format, (config.width, config.height));
         Self {
@@ -163,10 +170,6 @@ impl Renderer {
     /// Replaces whatever mesh the chunk had; an empty mesh just removes it.
     pub fn upload_chunk_mesh(&mut self, chunk: IVec3, mesh: &Mesh) {
         self.chunk_meshes.insert(&self.device, chunk, mesh);
-    }
-
-    pub fn aspect_ratio(&self) -> f32 {
-        self.config.width as f32 / self.config.height as f32
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -195,7 +198,8 @@ impl Renderer {
             }
             _ => return,
         };
-        let view_projection = camera.view_projection(self.aspect_ratio());
+        let view_projection =
+            camera.view_projection(self.config.width as f32 / self.config.height as f32);
         self.queue.write_buffer(
             &self.frame_buffer,
             0,
@@ -224,26 +228,17 @@ impl Renderer {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("main"),
-                color_attachments: &[
+                color_attachments: &[self.post.scene(), self.post.emissive()].map(|view| {
                     Some(wgpu::RenderPassColorAttachment {
-                        view: self.post.scene(),
+                        view,
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                             store: wgpu::StoreOp::Store,
                         },
-                    }),
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: self.post.emissive(),
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    }),
-                ],
+                    })
+                }),
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
@@ -281,25 +276,29 @@ fn frame_shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderM
     })
 }
 
-fn create_chunk_pipeline(
+/// A pipeline drawing into the scene's colour targets with the shared depth buffer, using the
+/// shader's `vs_main` and `fs_main`. `depth_write` is false for what is drawn behind everything.
+fn scene_pipeline(
     device: &wgpu::Device,
-    frame_layout: &wgpu::BindGroupLayout,
-    texture_layout: &wgpu::BindGroupLayout,
+    label: &str,
+    shader: &wgpu::ShaderModule,
+    bind_group_layouts: &[Option<&wgpu::BindGroupLayout>],
+    vertex_buffer: Option<wgpu::VertexBufferLayout>,
+    depth_write: bool,
 ) -> wgpu::RenderPipeline {
-    let shader = frame_shader(device, "chunk", include_str!("shader.wgsl"));
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("chunk"),
-        bind_group_layouts: &[Some(frame_layout), Some(texture_layout)],
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts,
         immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("chunk"),
-        layout: Some(&pipeline_layout),
+        label: Some(label),
+        layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(VERTEX_LAYOUT)],
+            buffers: &[vertex_buffer],
         },
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
@@ -307,14 +306,18 @@ fn create_chunk_pipeline(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::Less),
+            depth_write_enabled: Some(depth_write),
+            depth_compare: Some(if depth_write {
+                wgpu::CompareFunction::Less
+            } else {
+                wgpu::CompareFunction::Always
+            }),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &SCENE_TARGETS,
@@ -322,6 +325,32 @@ fn create_chunk_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// A filterable float texture read by fragment shaders.
+fn texture_entry(
+    binding: u32,
+    view_dimension: wgpu::TextureViewDimension,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        count: None,
+    }
 }
 
 fn create_depth_view(

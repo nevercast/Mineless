@@ -39,7 +39,6 @@ impl AvatarRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         frame_layout: &wgpu::BindGroupLayout,
-        depth_format: wgpu::TextureFormat,
     ) -> Self {
         let (vertices, indices) = avatar::build_mesh();
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -74,45 +73,18 @@ impl AvatarRenderer {
             "avatar",
             &[include_str!("skin_glow.wgsl"), include_str!("avatar.wgsl")].concat(),
         );
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("avatar"),
-            bind_group_layouts: &[Some(frame_layout), Some(&layout), Some(&skins.layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("avatar"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: size_of::<AvatarVertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &VERTEX_ATTRIBUTES,
-                })],
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: depth_format,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
+        let pipeline = super::scene_pipeline(
+            device,
+            "avatar",
+            &shader,
+            &[Some(frame_layout), Some(&layout), Some(&skins.layout)],
+            Some(wgpu::VertexBufferLayout {
+                array_stride: size_of::<AvatarVertex>() as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &VERTEX_ATTRIBUTES,
             }),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &super::SCENE_TARGETS,
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+            true,
+        );
 
         Self {
             pipeline,
