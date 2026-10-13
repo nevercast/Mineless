@@ -11,8 +11,8 @@ const GRASS_TINT: [u8; 3] = [0x91, 0xBD, 0x59];
 /// Every block tile as one layer of a single texture array, with a full mip chain so distant
 /// blocks don't shimmer. An array rather than an atlas keeps mips from bleeding between tiles.
 pub struct BlockTextures {
-    pub view: wgpu::TextureView,
-    pub sampler: wgpu::Sampler,
+    pub layout: wgpu::BindGroupLayout,
+    pub bind_group: wgpu::BindGroup,
 }
 
 impl BlockTextures {
@@ -52,13 +52,48 @@ impl BlockTextures {
             ..Default::default()
         });
 
-        Self {
-            view: texture.create_view(&wgpu::TextureViewDescriptor {
-                dimension: Some(wgpu::TextureViewDimension::D2Array),
-                ..Default::default()
-            }),
-            sampler,
-        }
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("block tiles"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("block tiles"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        Self { layout, bind_group }
     }
 }
 
@@ -81,7 +116,7 @@ fn tile_image(tile: Tile) -> RgbaImage {
     if tile == Tile::GrassTop {
         for pixel in image.pixels_mut() {
             for (channel, tint) in pixel.0.iter_mut().zip(GRASS_TINT) {
-                *channel = (*channel as u16 * tint as u16 / 255) as u8;
+                *channel = (u16::from(*channel) * u16::from(tint) / 255) as u8;
             }
         }
     }
