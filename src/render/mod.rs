@@ -2,13 +2,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytemuck::{Pod, Zeroable};
-use glam::{IVec3, Mat4, Vec3};
+use glam::{IVec3, Mat4, Vec2, Vec3};
 use winit::window::Window;
 
 mod avatar;
 mod border;
 mod camera;
 mod chunk_meshes;
+mod loading;
 mod post;
 mod skins;
 mod skybox;
@@ -20,6 +21,7 @@ use avatar::AvatarRenderer;
 use border::Border;
 use camera::Frustum;
 use chunk_meshes::ChunkMeshes;
+use loading::LoadingScreen;
 use post::{HDR_FORMAT, PostProcess};
 use skybox::Skybox;
 use texture::BlockTextures;
@@ -91,6 +93,7 @@ pub struct Renderer {
     avatar: AvatarRenderer,
     skybox: Skybox,
     border: Border,
+    loading: LoadingScreen,
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
@@ -175,6 +178,7 @@ impl Renderer {
         let border = Border::new(&device, &frame_layout, world);
         let depth_view = create_depth_view(&device, &config);
         let post = PostProcess::new(&device, config.format, (config.width, config.height));
+        let loading = LoadingScreen::new(&device, config.format);
         Self {
             surface,
             device,
@@ -189,6 +193,7 @@ impl Renderer {
             avatar,
             skybox,
             border,
+            loading,
             frame_buffer,
             frame_bind_group,
             texture_bind_group: textures.bind_group,
@@ -212,6 +217,42 @@ impl Renderer {
         self.post.resize(&self.device, (width, height));
     }
 
+    /// The next window frame to draw into, or `None` if there isn't one this time.
+    fn acquire_frame(&mut self) -> Option<wgpu::SurfaceTexture> {
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) => Some(frame),
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                drop(frame);
+                self.surface.configure(&self.device, &self.config);
+                None
+            }
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.config);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Draws the loading screen in place of the world, with `progress` in `0..=1` on its bar
+    /// and `detail` beneath it.
+    pub fn render_loading(&mut self, progress: f32, detail: &str) {
+        let Some(frame) = self.acquire_frame() else {
+            return;
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let size = Vec2::new(self.config.width as f32, self.config.height as f32);
+        self.loading
+            .draw(&self.device, &mut encoder, &view, size, progress, detail);
+        self.queue.submit([encoder.finish()]);
+        self.queue.present(frame);
+    }
+
     /// `time` is seconds since midnight, for animation. Returns how long the frame took to draw,
     /// CPU and GPU together, or `None` if there was no frame to draw into.
     pub fn render(
@@ -222,19 +263,7 @@ impl Renderer {
         avatars: &[Avatar],
     ) -> Option<Duration> {
         // Acquiring the frame is where vsync blocks, so the draw time starts after it.
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                drop(frame);
-                self.surface.configure(&self.device, &self.config);
-                return None;
-            }
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                return None;
-            }
-            _ => return None,
-        };
+        let frame = self.acquire_frame()?;
         let draw_start = Instant::now();
         let view_projection =
             camera.view_projection(self.config.width as f32 / self.config.height as f32);

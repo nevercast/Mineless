@@ -5,6 +5,8 @@
 //! made of: sandy and gravelly coasts and sea floors, grass, bare rock on cliffs and snow on cold
 //! high ground.
 
+use std::time::{Duration, Instant};
+
 use glam::{IVec3, Vec2, Vec3};
 
 mod trees;
@@ -109,63 +111,190 @@ const HIGH_ROCK_SALT: u32 = 0x7feb_352d;
 
 /// Fills `extent` with the terrain for `seed`. The same seed always gives the same world.
 pub fn generate(extent: Extent, seed: u32) -> World {
-    assert!(
-        extent.height >= HEIGHT,
-        "the world must be at least as tall as the terrain"
-    );
     let mut world = World::default();
-    for position in extent.chunk_positions() {
-        world.insert(position, generate_chunk(seed, position, extent));
-    }
-    fill_sea(&mut world, extent);
-    // The sea can turn a chunk of air into a chunk of water.
-    for chunk in world.chunks.values_mut() {
-        chunk.compact();
+    let mut generation = Generation::new(extent, seed);
+    while generation.stage() != Stage::Done {
+        generation.work(&mut world, Duration::MAX);
     }
     world
 }
 
-/// Floods the sea: air below `SEA_LEVEL` becomes water where it connects, through air below
-/// sea level, to the open surface of the sea. Sealed hollows stay dry. Reachability doesn't
-/// depend on the order cells are visited, so the result is the same however it runs.
-fn fill_sea(world: &mut World, extent: Extent) {
-    let (min, max) = (extent.min(), extent.max().with_y(SEA_LEVEL));
-    let size = max - min;
-    let index = |p: IVec3| {
-        let local = p - min;
-        ((local.x * size.y + local.y) * size.z + local.z) as usize
-    };
-    let mut reached = vec![false; size.element_product() as usize];
-    let mut frontier = Vec::new();
-    let surface = SEA_LEVEL - 1;
-    for x in min.x..max.x {
-        for z in min.z..max.z {
-            let position = IVec3::new(x, surface, z);
-            let open_to_sky =
-                (surface..extent.height).all(|y| world.block(IVec3::new(x, y, z)) == Block::Air);
-            if open_to_sky {
-                reached[index(position)] = true;
-                frontier.push(position);
+/// What a `Generation` is doing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stage {
+    Chunks,
+    Sea,
+    Done,
+}
+
+/// Generates a world a slice at a time, so a caller can keep its window responsive between
+/// slices. The world comes out the same however the work is sliced.
+pub struct Generation {
+    seed: u32,
+    extent: Extent,
+    chunks: Vec<IVec3>,
+    generated: usize,
+    sea: SeaFill,
+}
+
+impl Generation {
+    pub fn new(extent: Extent, seed: u32) -> Self {
+        assert!(
+            extent.height >= HEIGHT,
+            "the world must be at least as tall as the terrain"
+        );
+        Self {
+            seed,
+            extent,
+            chunks: extent.chunk_positions().collect(),
+            generated: 0,
+            sea: SeaFill::new(extent),
+        }
+    }
+
+    pub fn stage(&self) -> Stage {
+        if self.generated < self.chunks.len() {
+            Stage::Chunks
+        } else if !self.sea.done(&self.chunks) {
+            Stage::Sea
+        } else {
+            Stage::Done
+        }
+    }
+
+    /// The fraction of the current stage's work done, in `0..=1`.
+    pub fn progress(&self) -> f32 {
+        match self.stage() {
+            Stage::Chunks => self.generated as f32 / self.chunks.len() as f32,
+            Stage::Sea => self.sea.progress(&self.chunks),
+            Stage::Done => 1.0,
+        }
+    }
+
+    /// Generates into `world` until `budget` has passed, and always does at least some work
+    /// unless generation is done.
+    pub fn work(&mut self, world: &mut World, budget: Duration) {
+        let start = Instant::now();
+        loop {
+            match self.stage() {
+                Stage::Chunks => {
+                    let position = self.chunks[self.generated];
+                    world.insert(position, generate_chunk(self.seed, position, self.extent));
+                    self.generated += 1;
+                }
+                Stage::Sea => self.sea.work(world, &self.chunks),
+                Stage::Done => return,
+            }
+            if start.elapsed() >= budget {
+                return;
             }
         }
     }
-    while let Some(position) = frontier.pop() {
-        world.set_block(position, Block::Water);
-        for step in [
-            IVec3::X,
-            IVec3::NEG_X,
-            IVec3::Y,
-            IVec3::NEG_Y,
-            IVec3::Z,
-            IVec3::NEG_Z,
-        ] {
-            let next = position + step;
-            let inside = next.cmpge(min).all() && next.cmplt(max).all();
-            if inside && !reached[index(next)] && world.block(next) == Block::Air {
-                reached[index(next)] = true;
-                frontier.push(next);
+}
+
+/// Floods the sea: air below `SEA_LEVEL` becomes water where it connects, through air below
+/// sea level, to the open surface of the sea. Sealed hollows stay dry. Reachability doesn't
+/// depend on the order cells are visited, so the result is the same however it is sliced.
+struct SeaFill {
+    min: IVec3,
+    /// Sea-level cells inside the world, the ones that can be open sea.
+    size: IVec3,
+    height: i32,
+    /// Columns checked for open sea so far.
+    columns: usize,
+    /// Water cells whose neighbours haven't been looked at. A cell turns to water as it joins,
+    /// so the world itself records which cells have been reached.
+    frontier: Vec<IVec3>,
+    /// Chunks looked at afterwards to store as one block if the water filled them.
+    compacted: usize,
+}
+
+impl SeaFill {
+    /// Cells flooded between checks of the time budget, which would otherwise cost about as
+    /// much as the flooding.
+    const BATCH: usize = 1024;
+
+    fn new(extent: Extent) -> Self {
+        let min = extent.min();
+        Self {
+            min,
+            size: extent.max().with_y(SEA_LEVEL) - min,
+            height: extent.height,
+            columns: 0,
+            frontier: Vec::new(),
+            compacted: 0,
+        }
+    }
+
+    fn column_count(&self) -> usize {
+        (self.size.x * self.size.z) as usize
+    }
+
+    fn done(&self, chunks: &[IVec3]) -> bool {
+        self.compacted == chunks.len()
+    }
+
+    fn progress(&self, chunks: &[IVec3]) -> f32 {
+        (self.columns + self.compacted) as f32 / (self.column_count() + chunks.len()) as f32
+    }
+
+    fn work(&mut self, world: &mut World, chunks: &[IVec3]) {
+        for _ in 0..Self::BATCH {
+            if let Some(position) = self.frontier.pop() {
+                for step in [
+                    IVec3::X,
+                    IVec3::NEG_X,
+                    IVec3::Y,
+                    IVec3::NEG_Y,
+                    IVec3::Z,
+                    IVec3::NEG_Z,
+                ] {
+                    self.flood(world, position + step);
+                }
+            } else if self.columns < self.column_count() {
+                let column = self.columns as i32;
+                let (x, z) = (column / self.size.z, column % self.size.z);
+                let surface = self.min + IVec3::new(x, SEA_LEVEL - 1, z);
+                self.columns += 1;
+                if self.open_to_sky(world, surface) {
+                    self.flood(world, surface);
+                }
+            } else if let Some(&position) = chunks.get(self.compacted) {
+                self.compacted += 1;
+                if position.y * SIZE < SEA_LEVEL
+                    && let Some(chunk) = world.chunks.get_mut(&position)
+                {
+                    chunk.compact();
+                }
+            } else {
+                return;
             }
         }
+    }
+
+    fn flood(&mut self, world: &mut World, position: IVec3) {
+        let local = position - self.min;
+        let inside = local.cmpge(IVec3::ZERO).all() && local.cmplt(self.size).all();
+        if inside && world.block(position) == Block::Air {
+            world.set_block(position, Block::Water);
+            self.frontier.push(position);
+        }
+    }
+
+    /// Whether nothing but air lies from `position` to the top of the world. Whole chunks of air
+    /// are skipped, since most of the sky is stored that way.
+    fn open_to_sky(&self, world: &World, mut position: IVec3) -> bool {
+        while position.y < self.height {
+            let chunk = position.div_euclid(IVec3::splat(SIZE));
+            if world.uniform_chunk(chunk) == Some(Block::Air) {
+                position.y = (chunk.y + 1) * SIZE;
+            } else if world.block(position) == Block::Air {
+                position.y += 1;
+            } else {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -736,9 +865,9 @@ mod tests {
     }
 
     /// A hash of every block of a generated world, recorded before chunks could be stored as one
-    /// block, so storing them that way changed nothing.
+    /// block and before the sea fill could be sliced, so neither changed the world.
     #[test]
-    fn compact_storage_keeps_the_world_block_for_block() {
+    fn the_world_is_unchanged_block_for_block() {
         let world = generate(EXTENT, 5);
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for x in -32..32 {
@@ -751,6 +880,29 @@ mod tests {
             }
         }
         assert_eq!(hash, 0xff3f_5c37_a710_5744);
+    }
+
+    #[test]
+    fn generating_in_the_smallest_slices_makes_the_same_world() {
+        let whole = generate(EXTENT, 5);
+        let mut world = World::default();
+        let mut generation = Generation::new(EXTENT, 5);
+        generation.work(&mut world, Duration::ZERO);
+        assert_eq!(world.chunks.len(), 1);
+        let mut slices = 1;
+        let mut seen_sea = false;
+        while generation.stage() != Stage::Done {
+            seen_sea |= generation.stage() == Stage::Sea;
+            let progress = generation.progress();
+            assert!((0.0..=1.0).contains(&progress), "{progress}");
+            generation.work(&mut world, Duration::ZERO);
+            slices += 1;
+        }
+        assert!(seen_sea && slices > EXTENT.chunk_positions().count() + 1);
+        assert_eq!(world.chunks.len(), whole.chunks.len());
+        for (position, chunk) in &whole.chunks {
+            assert!(world.chunks[position] == *chunk, "{position}");
+        }
     }
 
     #[test]
@@ -1054,7 +1206,11 @@ mod tests {
         dig(IVec3::new(-6, 32, -10), IVec3::new(-3, 32, -10));
         dig(IVec3::new(-2, 30, -12), IVec3::new(0, 33, -8));
         dig(IVec3::new(6, 30, 6), IVec3::new(9, 33, 9));
-        fill_sea(&mut world, extent);
+        let chunks: Vec<IVec3> = extent.chunk_positions().collect();
+        let mut sea = SeaFill::new(extent);
+        while !sea.done(&chunks) {
+            sea.work(&mut world, &chunks);
+        }
 
         let at = |x, y, z| world.block(IVec3::new(x, y, z));
         for y in 30..solid_below {

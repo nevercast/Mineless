@@ -1,4 +1,5 @@
 mod avatar;
+mod loading;
 mod mesher;
 mod render;
 mod sky;
@@ -6,7 +7,7 @@ mod spectator;
 
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
@@ -15,16 +16,25 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use glam::{IVec2, Vec2, Vec3, vec3};
+use loading::Loading;
 use render::{Camera, Renderer};
 use sim::avatar::{Avatar, Skin};
 use sim::player::{JUMP_HEIGHTS, Player, TICK_RATE};
-use sim::world::{self, Extent, World};
+use sim::world::{Extent, World};
 use sky::{DAY_TICKS, Sky};
 use spectator::Spectator;
 
 struct App {
     world: World,
     seed: u32,
+    /// The world still being built, until play starts.
+    loading: Option<Loading>,
+    /// When the loading screen was last drawn. Drawing waits for vsync, so the screen is only
+    /// redrawn now and then and the frames in between go to loading.
+    loading_drawn: Option<Instant>,
+    /// When the program started, for reporting how long loading took.
+    launched: Instant,
+    /// Empty until the world is loaded, since they stand on it.
     players: Vec<Player>,
     /// Simulation ticks since the world began.
     ticks: u64,
@@ -74,10 +84,7 @@ impl ApplicationHandler for App {
         let attributes =
             Window::default_attributes().with_title(format!("Mineless | seed {}", self.seed));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
-        let mut renderer = pollster::block_on(Renderer::new(window.clone(), WORLD));
-        for chunk in self.world.chunk_positions() {
-            renderer.upload_chunk_mesh(chunk, &mesher::build_chunk_mesh(&self.world, chunk));
-        }
+        let renderer = pollster::block_on(Renderer::new(window.clone(), WORLD));
         self.renderer = Some(renderer);
         self.window = Some(window);
     }
@@ -103,6 +110,33 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) => {
                 self.spectator.release_all();
                 self.mouse_captured = set_mouse_capture(window, false);
+            }
+            WindowEvent::RedrawRequested if self.loading.is_some() => {
+                let loading = self.loading.as_mut().expect("checked by the match guard");
+                if loading.work(&mut self.world, renderer, LOADING_SLICE) {
+                    self.loading = None;
+                    eprintln!(
+                        "Playable after {:.2} s",
+                        self.launched.elapsed().as_secs_f32()
+                    );
+                    self.players = test_players(&self.world);
+                    let ground = self
+                        .world
+                        .column_top(START_POSITION.x as i32, START_POSITION.z as i32);
+                    self.camera = start_camera(ground);
+                    self.last_frame = Instant::now();
+                    window.set_title(&format!("Mineless | seed {}", self.seed));
+                } else if self
+                    .loading_drawn
+                    .is_none_or(|drawn| drawn.elapsed() >= LOADING_SCREEN_INTERVAL)
+                {
+                    self.loading_drawn = Some(Instant::now());
+                    let percent = (loading.progress() * 100.0).floor();
+                    let detail = format!("{} {percent:.0}%", loading.phase().name());
+                    renderer.render_loading(loading.progress(), &detail.to_uppercase());
+                    window.set_title(&format!("Mineless | seed {} | {detail}", self.seed));
+                }
+                window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
@@ -229,6 +263,10 @@ fn ground_at(world: &World, x: i32, z: i32) -> Vec3 {
 }
 
 const MAX_CATCH_UP: f32 = 0.25;
+/// Work done per frame while loading: enough to load quickly, little enough that the window
+/// stays responsive.
+const LOADING_SLICE: Duration = Duration::from_millis(12);
+const LOADING_SCREEN_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The world starts mid-morning.
 const START_TICKS: u64 = DAY_TICKS * 3 / 8;
@@ -312,13 +350,16 @@ fn main() {
         eprintln!("{error}\n{USAGE}");
         std::process::exit(2);
     });
+    let launched = Instant::now();
     let event_loop = EventLoop::new().expect("create event loop");
-    let world = world::terrain::generate(WORLD, seed);
     let mut app = App {
-        players: test_players(&world),
-        camera: start_camera(world.column_top(START_POSITION.x as i32, START_POSITION.z as i32)),
-        world,
+        world: World::default(),
         seed,
+        loading: Some(Loading::new(WORLD, seed)),
+        loading_drawn: None,
+        launched,
+        players: Vec::new(),
+        camera: start_camera(0),
         ticks: START_TICKS,
         unsimulated: 0.0,
         window: None,
@@ -375,7 +416,7 @@ mod tests {
 
     #[test]
     fn wanderer_stays_inside_the_world_border() {
-        let world = world::terrain::generate(WORLD, SEED);
+        let world = sim::world::terrain::generate(WORLD, SEED);
         let mut players = test_players(&world);
         let (low, high) = (WORLD.min().as_vec3() + 1.0, WORLD.max().as_vec3() - 1.0);
         let camera = ground_at(&world, 0, 0);
