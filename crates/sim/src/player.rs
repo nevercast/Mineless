@@ -187,6 +187,24 @@ mod tests {
     }
 
     #[test]
+    fn sinks_through_water_to_the_floor() {
+        let mut world = floor();
+        for x in 0..16 {
+            for z in 0..16 {
+                for y in 1..6 {
+                    world.set_block(IVec3::new(x, y, z), Block::Water);
+                }
+            }
+        }
+        let mut player = Player::new(Vec3::new(8.5, 8.0, 8.5), 0.0, Skin::Player);
+        for _ in 0..100 {
+            player.tick(&world);
+        }
+        assert!(player.on_ground);
+        assert_eq!(player.body.position.y, 1.0);
+    }
+
+    #[test]
     fn falling_speed_settles_at_terminal_velocity() {
         let world = World::empty(IVec3::ONE);
         let mut player = Player::new(Vec3::new(8.5, 0.0, 8.5), 0.0, Skin::Player);

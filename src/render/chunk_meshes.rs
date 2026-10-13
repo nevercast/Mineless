@@ -50,13 +50,16 @@ impl ChunkMeshes {
         self.meshes.insert(chunk, gpu_mesh);
     }
 
-    /// Meshes of the chunks that might be on screen.
-    pub fn visible<'a>(&'a self, frustum: &'a Frustum) -> impl Iterator<Item = &'a GpuMesh> {
-        self.meshes.iter().filter_map(|(chunk, mesh)| {
-            let min = (*chunk * CHUNK_SIZE as i32).as_vec3();
+    /// Meshes of the chunks that might be on screen, with their chunk coordinates.
+    pub fn visible<'a>(
+        &'a self,
+        frustum: &'a Frustum,
+    ) -> impl Iterator<Item = (IVec3, &'a GpuMesh)> {
+        self.meshes.iter().filter_map(|(&chunk, mesh)| {
+            let min = (chunk * CHUNK_SIZE as i32).as_vec3();
             frustum
                 .intersects_box(min, min + CHUNK_SIZE as f32)
-                .then_some(mesh)
+                .then_some((chunk, mesh))
         })
     }
 }

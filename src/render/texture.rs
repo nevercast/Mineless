@@ -12,6 +12,9 @@ const FOLIAGE_TINT: [u8; 3] = [0x6A, 0xA8, 0x3C];
 /// Fills the holes in the leaf texture, so leaf cubes read as dense foliage until leaves are cut
 /// out properly.
 const FOLIAGE_SHADOW: [u8; 3] = [0x1E, 0x3A, 0x12];
+/// Fixed tint and opacity for the greyscale water.
+const WATER_TINT: [u8; 3] = [0x3F, 0x76, 0xE4];
+const WATER_ALPHA: u8 = 0xB4;
 
 /// Every block tile as one layer of a single texture array, with a full mip chain so distant
 /// blocks don't shimmer. An array rather than an atlas keeps mips from bleeding between tiles.
@@ -101,10 +104,15 @@ fn tile_image(tile: Tile) -> RgbaImage {
         Tile::OakLog => include_bytes!("../../textures/block/oak_log.png"),
         Tile::OakLogTop => include_bytes!("../../textures/block/oak_log_top.png"),
         Tile::OakLeaves => include_bytes!("../../textures/block/oak_leaves.png"),
+        Tile::Water => include_bytes!("../../textures/block/water_still.png"),
     };
     let mut image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
         .unwrap_or_else(|err| panic!("decode {tile:?} texture: {err}"))
         .to_rgba8();
+    if tile == Tile::Water {
+        // The file is a strip of animation frames; still water uses the first.
+        image = imageops::crop_imm(&image, 0, 0, TILE_SIZE, TILE_SIZE).to_image();
+    }
     assert_eq!(
         image.dimensions(),
         (TILE_SIZE, TILE_SIZE),
@@ -122,6 +130,12 @@ fn tile_image(tile: Tile) -> RgbaImage {
                 };
                 let [sr, sg, sb] = FOLIAGE_SHADOW;
                 pixel.0 = [blend(r, sr), blend(g, sg), blend(b, sb), 255];
+            }
+        }
+        Tile::Water => {
+            tint(&mut image, WATER_TINT);
+            for pixel in image.pixels_mut() {
+                pixel.0[3] = WATER_ALPHA;
             }
         }
         _ => {}

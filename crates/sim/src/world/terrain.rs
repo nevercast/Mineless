@@ -124,7 +124,48 @@ pub fn generate(chunks: IVec3, seed: u32) -> World {
             }
         }
     }
+    fill_sea(&mut world, chunks * SIZE);
     world
+}
+
+/// Floods the sea: air below `SEA_LEVEL` becomes water where it connects, through air below
+/// sea level, to the open surface of the sea. Sealed hollows stay dry. Reachability doesn't
+/// depend on the order cells are visited, so the result is the same however it runs.
+fn fill_sea(world: &mut World, extent: IVec3) {
+    let index = |p: IVec3| ((p.x * SEA_LEVEL + p.y) * extent.z + p.z) as usize;
+    let mut reached = vec![false; (extent.x * SEA_LEVEL * extent.z) as usize];
+    let mut frontier = Vec::new();
+    let surface = SEA_LEVEL - 1;
+    for x in 0..extent.x {
+        for z in 0..extent.z {
+            let position = IVec3::new(x, surface, z);
+            let open_to_sky =
+                (surface..extent.y).all(|y| world.block(IVec3::new(x, y, z)) == Block::Air);
+            if open_to_sky {
+                reached[index(position)] = true;
+                frontier.push(position);
+            }
+        }
+    }
+    while let Some(position) = frontier.pop() {
+        world.set_block(position, Block::Water);
+        for step in [
+            IVec3::X,
+            IVec3::NEG_X,
+            IVec3::Y,
+            IVec3::NEG_Y,
+            IVec3::Z,
+            IVec3::NEG_Z,
+        ] {
+            let next = position + step;
+            let inside =
+                next.cmpge(IVec3::ZERO).all() && next.cmplt(extent.with_y(SEA_LEVEL)).all();
+            if inside && !reached[index(next)] && world.block(next) == Block::Air {
+                reached[index(next)] = true;
+                frontier.push(next);
+            }
+        }
+    }
 }
 
 /// The chunk at `position` in a world `chunks` across, from nothing but the seed and those two,
@@ -903,6 +944,82 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn sea_fills_open_water_and_what_connects_to_it() {
+        let chunks = IVec3::new(2, 4, 2);
+        let mut world = World::empty(chunks);
+        let solid_below = SEA_LEVEL + 3;
+        for x in 0..32 {
+            for z in 0..32 {
+                for y in 0..solid_below {
+                    world.set_block(IVec3::new(x, y, z), Block::Stone);
+                }
+            }
+        }
+        let mut dig = |from: IVec3, to: IVec3| {
+            for x in from.x..=to.x {
+                for y in from.y..=to.y {
+                    for z in from.z..=to.z {
+                        world.set_block(IVec3::new(x, y, z), Block::Air);
+                    }
+                }
+            }
+        };
+        // An open basin, a hollow joined to it by a one-block tunnel, and a sealed hollow.
+        dig(IVec3::new(4, 30, 4), IVec3::new(9, solid_below - 1, 9));
+        dig(IVec3::new(10, 32, 6), IVec3::new(13, 32, 6));
+        dig(IVec3::new(14, 30, 4), IVec3::new(16, 33, 8));
+        dig(IVec3::new(22, 30, 22), IVec3::new(25, 33, 25));
+        fill_sea(&mut world, chunks * SIZE);
+
+        let at = |x, y, z| world.block(IVec3::new(x, y, z));
+        for y in 30..solid_below {
+            let expected = if y < SEA_LEVEL {
+                Block::Water
+            } else {
+                Block::Air
+            };
+            assert_eq!(at(6, y, 6), expected, "basin at {y}");
+        }
+        assert_eq!(at(12, 32, 6), Block::Water);
+        assert_eq!(at(15, 30, 5), Block::Water);
+        assert_eq!(at(23, 31, 23), Block::Air);
+    }
+
+    #[test]
+    fn generated_sea_is_flooded_and_sealed_off() {
+        let chunks = IVec3::new(6, HEIGHT / SIZE, 6);
+        let world = generate(chunks, 6);
+        let extent = chunks * SIZE;
+        let mut water = 0;
+        for x in 0..extent.x {
+            for z in 0..extent.z {
+                for y in 0..HEIGHT {
+                    let position = IVec3::new(x, y, z);
+                    if world.block(position) != Block::Water {
+                        continue;
+                    }
+                    water += 1;
+                    assert!(y < SEA_LEVEL, "water at {position}");
+                    for step in [
+                        IVec3::X,
+                        IVec3::NEG_X,
+                        IVec3::Y,
+                        IVec3::NEG_Y,
+                        IVec3::Z,
+                        IVec3::NEG_Z,
+                    ] {
+                        let next = position + step;
+                        let open = next.y < SEA_LEVEL && world.block(next) == Block::Air;
+                        let outside = next.cmplt(IVec3::ZERO).any() || next.cmpge(extent).any();
+                        assert!(!open || outside, "air beside water at {next}");
+                    }
+                }
+            }
+        }
+        assert!(water > 0);
     }
 
     #[test]

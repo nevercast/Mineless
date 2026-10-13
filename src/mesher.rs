@@ -41,10 +41,11 @@ pub enum Tile {
     OakLog,
     OakLogTop,
     OakLeaves,
+    Water,
 }
 
 impl Tile {
-    pub const ALL: [Tile; 11] = [
+    pub const ALL: [Tile; 12] = [
         Tile::GrassTop,
         Tile::GrassSide,
         Tile::Dirt,
@@ -56,6 +57,7 @@ impl Tile {
         Tile::OakLog,
         Tile::OakLogTop,
         Tile::OakLeaves,
+        Tile::Water,
     ];
 
     /// The tile for the face of `block` facing `normal`.
@@ -75,6 +77,7 @@ impl Tile {
             Block::OakLog(axis) if along(axis, normal) => Tile::OakLogTop,
             Block::OakLog(_) => Tile::OakLog,
             Block::OakLeaves => Tile::OakLeaves,
+            Block::Water => Tile::Water,
             Block::Air => unreachable!("air has no faces"),
         }
     }
@@ -98,6 +101,12 @@ fn quarter_turned(block: Block, normal: IVec3) -> bool {
         Block::OakLog(Axis::Z) => normal.x != 0,
         _ => false,
     }
+}
+
+/// One chunk's triangles: solid terrain, and the water drawn over it afterwards.
+pub struct ChunkMesh {
+    pub opaque: Mesh,
+    pub water: Mesh,
 }
 
 /// CPU-side triangles for one chunk, in world block units, ready for the renderer to upload.
@@ -160,11 +169,14 @@ impl Snapshot {
     }
 }
 
-/// Builds the mesh for one chunk, emitting only faces that border air. Neighbours are read
-/// from the world so faces between touching chunks are culled too.
-pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> Mesh {
+/// Builds the meshes for one chunk. Solid blocks show the faces that look into air or water;
+/// water shows only the faces that look into air, so its surface is drawn but nothing between
+/// water cells or where it meets the ground. Neighbours are read from the world so faces
+/// between touching chunks are culled too.
+pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> ChunkMesh {
     let blocks = Snapshot::new(world, chunk);
-    let mut mesh = Mesh::default();
+    let mut opaque = Mesh::default();
+    let mut water = Mesh::default();
     let origin = chunk * CHUNK_SIZE as i32;
     for y in 0..CHUNK_SIZE as i32 {
         for z in 0..CHUNK_SIZE as i32 {
@@ -172,28 +184,28 @@ pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> Mesh {
                 let local = IVec3::new(x, y, z);
                 let position = origin + local;
                 let block = blocks.block(position);
-                if block == Block::Air {
-                    continue;
-                }
                 for (index, face) in FACES.iter().enumerate() {
-                    if blocks.block(position + face.normal) == Block::Air {
+                    let neighbour = blocks.block(position + face.normal);
+                    if block == Block::Water && neighbour == Block::Air {
+                        push_face(&mut water, index, local, Tile::Water, false, [0; 4]);
+                    } else if block.is_solid() && !neighbour.is_solid() {
                         let tile = Tile::for_face(block, face.normal);
                         let turned = quarter_turned(block, face.normal);
                         let occlusion = face_occlusion(&blocks, position, face);
-                        push_face(&mut mesh, index, local, tile, turned, occlusion);
+                        push_face(&mut opaque, index, local, tile, turned, occlusion);
                     }
                 }
             }
         }
     }
-    mesh
+    ChunkMesh { opaque, water }
 }
 
 /// How many of the three blocks around each corner of a face are solid, looking from the air
 /// cell in front of the face. Two solid sides fully enclose the corner whatever the diagonal is.
 fn face_occlusion(blocks: &Snapshot, position: IVec3, face: &Face) -> [usize; 4] {
     let in_front = position + face.normal;
-    let solid = |offset: IVec3| blocks.block(in_front + offset) != Block::Air;
+    let solid = |offset: IVec3| blocks.block(in_front + offset).is_solid();
     face.corners.map(|corner| {
         // Step towards the corner along each axis the face lies in (the ones the normal ignores).
         let toward = IVec3::from_array(corner.map(|c| 2 * c - 1));
@@ -246,7 +258,45 @@ mod tests {
     use super::*;
 
     fn face_count(world: &World, chunk: IVec3) -> usize {
-        build_chunk_mesh(world, chunk).indices.len() / 6
+        build_chunk_mesh(world, chunk).opaque.indices.len() / 6
+    }
+
+    fn water_faces(world: &World) -> Vec<IVec3> {
+        let mesh = build_chunk_mesh(world, IVec3::ZERO).water;
+        mesh.vertices
+            .chunks(4)
+            .map(|corners| FACES[((corners[0].0 >> 15) & 7) as usize].normal)
+            .collect()
+    }
+
+    #[test]
+    fn water_shows_only_its_surface() {
+        let mut world = World::empty(IVec3::ONE);
+        for x in 3..5 {
+            world.set_block(IVec3::new(x, 3, 3), Block::Water);
+        }
+        world.set_block(IVec3::new(3, 2, 3), Block::Stone);
+        world.set_block(IVec3::new(4, 2, 3), Block::Stone);
+        let faces = water_faces(&world);
+        // Two cells in a row, on stone: no face between them or on the stone, five each of the
+        // rest, all looking into air.
+        assert_eq!(faces.len(), 8);
+        assert_eq!(
+            faces.iter().filter(|&&normal| normal == IVec3::Y).count(),
+            2
+        );
+        assert!(!faces.contains(&IVec3::NEG_Y));
+        // The stone's tops under the water are still drawn, as opaque faces.
+        assert_eq!(face_count(&world, IVec3::ZERO), 10);
+    }
+
+    #[test]
+    fn water_against_stone_shows_the_stone() {
+        let mut world = World::empty(IVec3::ONE);
+        world.set_block(IVec3::new(3, 3, 3), Block::Water);
+        world.set_block(IVec3::new(4, 3, 3), Block::Stone);
+        assert!(!water_faces(&world).contains(&IVec3::X));
+        assert_eq!(face_count(&world, IVec3::ZERO), 6);
     }
 
     #[test]
@@ -312,7 +362,7 @@ mod tests {
         for (axis, turned) in turned_faces {
             let mut world = World::empty(IVec3::ONE);
             world.set_block(IVec3::new(3, 3, 3), Block::OakLog(axis));
-            let corners = texture_corners(&build_chunk_mesh(&world, IVec3::ZERO));
+            let corners = texture_corners(&build_chunk_mesh(&world, IVec3::ZERO).opaque);
             for (index, face) in FACES.iter().enumerate() {
                 let expected: Vec<u32> = if turned.contains(&face.normal) {
                     vec![1, 2, 3, 0]

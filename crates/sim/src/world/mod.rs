@@ -58,7 +58,7 @@ impl World {
             * SIZE;
         (0..height)
             .rev()
-            .find(|&y| self.block(IVec3::new(x, y, z)) != Block::Air)
+            .find(|&y| self.block(IVec3::new(x, y, z)).is_solid())
             .map_or(0, |y| y + 1)
     }
 

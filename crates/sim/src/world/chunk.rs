@@ -16,6 +16,15 @@ pub enum Block {
     Snow,
     OakLog(Axis),
     OakLeaves,
+    /// Still sea water, which bodies pass through.
+    Water,
+}
+
+impl Block {
+    /// Whether bodies collide with it and it hides what is behind it.
+    pub fn is_solid(self) -> bool {
+        !matches!(self, Block::Air | Block::Water)
+    }
 }
 
 /// The world axis a log's grain runs along: `Y` for an upright trunk.

@@ -22,9 +22,10 @@ use post::{HDR_FORMAT, PostProcess};
 use skybox::Skybox;
 use texture::BlockTextures;
 
-use crate::mesher::{Mesh, Vertex};
+use crate::mesher::{ChunkMesh, Vertex};
 use crate::sky::Sky;
 use sim::avatar::Avatar;
+use sim::world::CHUNK_SIZE;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Colour targets of every scene pipeline, matching `SceneOutput` in frame.wgsl.
@@ -82,7 +83,9 @@ pub struct Renderer {
     depth_view: wgpu::TextureView,
     post: PostProcess,
     pipeline: wgpu::RenderPipeline,
+    water_pipeline: wgpu::RenderPipeline,
     chunk_meshes: ChunkMeshes,
+    water_meshes: ChunkMeshes,
     avatar: AvatarRenderer,
     skybox: Skybox,
     frame_buffer: wgpu::Buffer,
@@ -144,13 +147,23 @@ impl Renderer {
         });
 
         let textures = BlockTextures::load(&device, &queue);
+        let chunk_shader = frame_shader(&device, "chunk", include_str!("shader.wgsl"));
+        let chunk_bind_groups = [Some(&frame_layout), Some(&textures.layout)];
         let pipeline = scene_pipeline(
             &device,
             "chunk",
-            &frame_shader(&device, "chunk", include_str!("shader.wgsl")),
-            &[Some(&frame_layout), Some(&textures.layout)],
+            &chunk_shader,
+            &chunk_bind_groups,
             &CHUNK_VERTEX_LAYOUTS,
-            true,
+            Layer::Opaque,
+        );
+        let water_pipeline = scene_pipeline(
+            &device,
+            "water",
+            &chunk_shader,
+            &chunk_bind_groups,
+            &CHUNK_VERTEX_LAYOUTS,
+            Layer::Translucent,
         );
 
         let avatar = AvatarRenderer::new(&device, &queue, &frame_layout);
@@ -165,7 +178,9 @@ impl Renderer {
             depth_view,
             post,
             pipeline,
+            water_pipeline,
             chunk_meshes: ChunkMeshes::default(),
+            water_meshes: ChunkMeshes::default(),
             avatar,
             skybox,
             frame_buffer,
@@ -174,9 +189,10 @@ impl Renderer {
         }
     }
 
-    /// Replaces whatever mesh the chunk had; an empty mesh just removes it.
-    pub fn upload_chunk_mesh(&mut self, chunk: IVec3, mesh: &Mesh) {
-        self.chunk_meshes.insert(&self.device, chunk, mesh);
+    /// Replaces whatever meshes the chunk had; an empty mesh just removes it.
+    pub fn upload_chunk_mesh(&mut self, chunk: IVec3, mesh: &ChunkMesh) {
+        self.chunk_meshes.insert(&self.device, chunk, &mesh.opaque);
+        self.water_meshes.insert(&self.device, chunk, &mesh.water);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -267,17 +283,30 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            let frustum = Frustum::new(view_projection);
             self.skybox.draw(&mut pass, &self.frame_bind_group);
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
-            for mesh in self.chunk_meshes.visible(&Frustum::new(view_projection)) {
-                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                pass.set_vertex_buffer(1, mesh.origin_buffer.slice(..));
-                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            for (_, mesh) in self.chunk_meshes.visible(&frustum) {
+                draw_chunk(&mut pass, mesh);
             }
             self.avatar.draw(&mut pass, &self.frame_bind_group);
+
+            // Water blends over everything opaque, far chunks first so nearer water blends over
+            // them. Faces within a chunk are unsorted; flat still water of one colour hides that.
+            let mut water: Vec<_> = self.water_meshes.visible(&frustum).collect();
+            let distance = |chunk: IVec3| {
+                let centre = (chunk.as_vec3() + 0.5) * CHUNK_SIZE as f32;
+                centre.distance_squared(camera.position)
+            };
+            water.sort_by(|(a, _), (b, _)| distance(*b).total_cmp(&distance(*a)));
+            pass.set_pipeline(&self.water_pipeline);
+            pass.set_bind_group(0, &self.frame_bind_group, &[]);
+            pass.set_bind_group(1, &self.texture_bind_group, &[]);
+            for (_, mesh) in water {
+                draw_chunk(&mut pass, mesh);
+            }
         }
         self.post.draw(&mut encoder, &view);
         self.queue.submit([encoder.finish()]);
@@ -291,6 +320,25 @@ impl Renderer {
     }
 }
 
+fn draw_chunk(pass: &mut wgpu::RenderPass, mesh: &chunk_meshes::GpuMesh) {
+    pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+    pass.set_vertex_buffer(1, mesh.origin_buffer.slice(..));
+    pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+    pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+}
+
+/// How a scene pipeline treats depth, blending and back faces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Layer {
+    /// Depth tested and written, back faces culled.
+    Opaque,
+    /// Drawn first and never written to depth, so the world always covers it.
+    Background,
+    /// Depth tested but not written, blended over the scene colour and seen from both sides, and
+    /// never glowing.
+    Translucent,
+}
+
 /// A shader whose source is `body` after frame.wgsl's shared uniforms and lighting.
 fn frame_shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule {
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -300,15 +348,30 @@ fn frame_shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderM
 }
 
 /// A pipeline drawing into the scene's colour targets with the shared depth buffer, using the
-/// shader's `vs_main` and `fs_main`. `depth_write` is false for what is drawn behind everything.
+/// shader's `vs_main` and `fs_main`.
 fn scene_pipeline(
     device: &wgpu::Device,
     label: &str,
     shader: &wgpu::ShaderModule,
     bind_group_layouts: &[Option<&wgpu::BindGroupLayout>],
     vertex_buffers: &[Option<wgpu::VertexBufferLayout>],
-    depth_write: bool,
+    layer: Layer,
 ) -> wgpu::RenderPipeline {
+    let targets = if layer == Layer::Translucent {
+        let [scene, emissive] = SCENE_TARGETS;
+        [
+            scene.map(|target| wgpu::ColorTargetState {
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                ..target
+            }),
+            emissive.map(|target| wgpu::ColorTargetState {
+                write_mask: wgpu::ColorWrites::empty(),
+                ..target
+            }),
+        ]
+    } else {
+        SCENE_TARGETS
+    };
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts,
@@ -324,16 +387,16 @@ fn scene_pipeline(
             buffers: vertex_buffers,
         },
         primitive: wgpu::PrimitiveState {
-            cull_mode: Some(wgpu::Face::Back),
+            cull_mode: (layer != Layer::Translucent).then_some(wgpu::Face::Back),
             ..Default::default()
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled: Some(depth_write),
-            depth_compare: Some(if depth_write {
-                wgpu::CompareFunction::Less
-            } else {
+            depth_write_enabled: Some(layer == Layer::Opaque),
+            depth_compare: Some(if layer == Layer::Background {
                 wgpu::CompareFunction::Always
+            } else {
+                wgpu::CompareFunction::Less
             }),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
@@ -343,7 +406,7 @@ fn scene_pipeline(
             module: shader,
             entry_point: Some("fs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            targets: &SCENE_TARGETS,
+            targets: &targets,
         }),
         multiview_mask: None,
         cache: None,

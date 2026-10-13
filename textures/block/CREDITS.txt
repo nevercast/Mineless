@@ -15,7 +15,9 @@ oak_log_top.png
 sand.png
 snow.png
 stone.png
+water_still.png
 
 Modified at load time, not on disk:
 grass_block_top.png is tinted green.
 oak_leaves.png is tinted green and its transparent pixels are filled with dark green, making it opaque.
+water_still.png is cropped to its first animation frame, tinted blue and given a fixed opacity.

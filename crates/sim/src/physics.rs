@@ -3,7 +3,7 @@
 
 use glam::{BVec3, IVec3, Vec3};
 
-use crate::world::{Block, World};
+use crate::world::World;
 
 /// How far boxes may sink into each other through rounding and still count as touching, not
 /// overlapping. Without it a box left a hair inside a face it rested on is no longer stopped by it.
@@ -67,7 +67,7 @@ impl Body {
             max: start.max + delta.max(Vec3::ZERO),
         };
         let blocks: Vec<Aabb> = blocks_touching(&swept)
-            .filter(|&position| world.block(position) != Block::Air)
+            .filter(|&position| world.block(position).is_solid())
             .map(Aabb::block)
             .collect();
 
@@ -97,6 +97,7 @@ fn blocks_touching(aabb: &Aabb) -> impl Iterator<Item = IVec3> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::Block;
 
     /// A stone floor at y = 0 with a stone wall along x = 3.
     fn room() -> World {
