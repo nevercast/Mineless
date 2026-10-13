@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 
 use glam::IVec3;
 
-use crate::world::{Block, CHUNK_SIZE, World};
+use sim::world::{Block, CHUNK_SIZE, World};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]

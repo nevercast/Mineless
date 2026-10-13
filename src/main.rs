@@ -1,11 +1,8 @@
 mod avatar;
 mod mesher;
-mod physics;
-mod player;
 mod render;
 mod sky;
 mod spectator;
-mod world;
 
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
@@ -17,13 +14,13 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use avatar::{Avatar, Skin};
 use glam::{IVec3, Vec2, Vec3, vec3};
-use player::{JUMP_HEIGHTS, Player, TICK_RATE};
 use render::{Camera, Renderer};
+use sim::avatar::{Avatar, Skin};
+use sim::player::{JUMP_HEIGHTS, Player, TICK_RATE};
+use sim::world::{self, World};
 use sky::{DAY_TICKS, Sky};
 use spectator::Spectator;
-use world::World;
 
 struct App {
     world: World,

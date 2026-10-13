@@ -6,7 +6,7 @@ Flag as blocking:
 - Dead code, unused parameters, `pub` items only used inside their module.
 - Comments that restate the code, or doc comments on obvious items.
 - `expect` whose message doesn't say why failure can't happen.
-- Simulation modules importing wgpu or winit.
+- Rendering concerns (vertex layouts, GPU types, window input) leaking into `crates/sim`.
 - Platform-specific code without a Windows path.
 - A change wider than the PR's stated step.
 - Screenshots committed to the tree, or a PR with screenshots that lack a description.
