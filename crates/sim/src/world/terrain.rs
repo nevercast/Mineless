@@ -1,7 +1,7 @@
 //! Seeded terrain from a 3D density field: low plains a few blocks above the sea, broken by
 //! upland regions that rise in escarpments with ledges, overhangs and now and then an arch or a
-//! lump of floating land, all inside a cobblestone wall that keeps walkers from falling off the
-//! edge of the world. Climate and biome then decide what the top few blocks of every surface are
+//! lump of floating land, all inside a full-height border that keeps walkers from falling off
+//! the edge of the world. Climate and biome then decide what the top few blocks of every surface are
 //! made of: sandy and gravelly coasts and sea floors, grass, bare rock on cliffs and snow on cold
 //! high ground.
 
@@ -87,8 +87,6 @@ const CLIFF_STEP: i32 = 3;
 /// Above this, hills are a mix of grass and bare rock in mid-sized patches.
 const HIGH_ROCK_LINE: i32 = SEA_LEVEL + 30;
 const HIGH_ROCK_SCALE: f32 = 16.0;
-/// How far the edge wall stands above the ground just inside it; walkers jump at most 1.25.
-const WALL_ABOVE_GROUND: i32 = 3;
 
 /// Density is sampled every `LATTICE_STEP` blocks and interpolated between: 3D noise for every
 /// block would make generation far too slow. The lattice is anchored to world coordinates, so
@@ -181,15 +179,14 @@ fn generate_chunk(seed: u32, position: IVec3, chunks: IVec3) -> Chunk {
         for local_z in 0..CHUNK_SIZE {
             let (x, z) = (origin.x + local_x as i32, origin.z + local_z as i32);
             let on_edge = x == 0 || z == 0 || x == extent.x - 1 || z == extent.z - 1;
-            let wall_top = on_edge.then(|| wall_top(&columns, x, z, extent));
             let surface = Surface::at(seed, x, z, &columns);
             let column = columns.column(x, z);
             for local_y in 0..CHUNK_SIZE {
                 let y = origin.y + local_y as i32;
-                let block = match wall_top {
-                    Some(top) if y < top => Block::Cobblestone,
-                    Some(_) => Block::Air,
-                    None => surface.block(column, y),
+                let block = if on_edge {
+                    Block::WorldBorder
+                } else {
+                    surface.block(column, y)
                 };
                 if block != Block::Air {
                     chunk.set(local_x, local_y, local_z, block);
@@ -201,19 +198,8 @@ fn generate_chunk(seed: u32, position: IVec3, chunks: IVec3) -> Chunk {
     chunk
 }
 
-/// The highest ground the wall borders, so it is never shorter than a jump.
-fn wall_top(columns: &Neighbourhood, x: i32, z: i32, extent: IVec3) -> i32 {
-    let inside = IVec3::new(x, 0, z).clamp(IVec3::ONE, extent - 2);
-    let ground = (-1..=1)
-        .flat_map(|dx| (-1..=1).map(move |dz| (dx, dz)))
-        .map(|(dx, dz)| columns.top(inside.x + dx, inside.z + dz))
-        .max()
-        .expect("the neighbourhood is never empty");
-    ground + WALL_ABOVE_GROUND
-}
-
-/// The columns of one chunk and a border round it, with their tops, since the wall, the cliff
-/// test and trees all look at neighbouring columns.
+/// The columns of one chunk and a border round it, with their tops, since the cliff test and
+/// trees look at neighbouring columns.
 struct Neighbourhood {
     /// World position of the first column.
     origin: IVec3,
@@ -717,15 +703,15 @@ mod tests {
     #[test]
     fn a_chunk_generated_alone_matches_the_whole_world() {
         let world = generate(CHUNKS, 5);
-        let wall = IVec3::new(0, 1, 2);
+        let border = IVec3::new(0, 1, 2);
         let interior = IVec3::new(1, 2, 1);
-        for position in [wall, interior] {
+        for position in [border, interior] {
             assert!(
                 generate_chunk(5, position, CHUNKS) == world.chunks[&position],
                 "{position}"
             );
         }
-        assert_eq!(world.block(IVec3::new(0, 20, 40)), Block::Cobblestone);
+        assert_eq!(world.block(IVec3::new(0, 20, 40)), Block::WorldBorder);
     }
 
     #[test]
@@ -815,7 +801,7 @@ mod tests {
         );
     }
 
-    /// Dressed blocks of a 96x96 area in the middle of a 320-block world, clear of the wall, for
+    /// Dressed blocks of a 96x96 area in the middle of a 320-block world, clear of the border, for
     /// seeds 0-3. Built once and shared, since it is the slowest part of these tests.
     fn dressed() -> &'static [World] {
         static WORLDS: std::sync::OnceLock<Vec<World>> = std::sync::OnceLock::new();
@@ -895,23 +881,23 @@ mod tests {
                     let (temperature, _) = climate(seed, position.x, position.z);
                     assert!(snowy(temperature, y), "snow at {position}, seed {seed}");
                 }
-                Block::Cobblestone => panic!("cobblestone at {position}, away from the wall"),
+                Block::Cobblestone => panic!("terrain placed cobblestone at {position}"),
                 _ => {}
             }
         }
     }
 
     #[test]
-    fn cobblestone_is_only_the_wall() {
+    fn border_fills_the_edge_columns_and_terrain_places_no_cobblestone() {
         let world = generate(CHUNKS, 5);
         let extent = CHUNKS * SIZE;
         for x in 0..extent.x {
             for z in 0..extent.z {
                 let on_edge = x == 0 || z == 0 || x == extent.x - 1 || z == extent.z - 1;
                 for y in 0..HEIGHT {
-                    if world.block(IVec3::new(x, y, z)) == Block::Cobblestone {
-                        assert!(on_edge, "{x}, {y}, {z}");
-                    }
+                    let block = world.block(IVec3::new(x, y, z));
+                    assert_eq!(block == Block::WorldBorder, on_edge, "{x}, {y}, {z}");
+                    assert_ne!(block, Block::Cobblestone, "{x}, {y}, {z}");
                 }
             }
         }

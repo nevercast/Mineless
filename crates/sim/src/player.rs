@@ -244,6 +244,28 @@ mod tests {
     }
 
     #[test]
+    fn the_world_border_stops_walking_and_jumping() {
+        let mut world = floor();
+        for y in 1..64 {
+            for z in 0..16 {
+                world.set_block(IVec3::new(12, y, z), Block::WorldBorder);
+            }
+        }
+        for jumping in [false, true] {
+            let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
+            player.controls.walk = Vec2::X;
+            for _ in 0..200 {
+                if jumping {
+                    player.controls.jump = Some(*JUMP_HEIGHTS.end());
+                }
+                player.tick(&world);
+                assert!(player.body.position.x < 12.0, "jumping {jumping}");
+            }
+            assert!(player.body.position.x > 11.0, "jumping {jumping}");
+        }
+    }
+
+    #[test]
     fn minecraft_jump_velocity_peaks_at_its_usual_height() {
         assert!((peak_height(0.42) - 1.2522).abs() < 1e-3);
     }

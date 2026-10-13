@@ -71,7 +71,10 @@ impl ApplicationHandler for App {
         }
         let attributes = Window::default_attributes().with_title("Mineless");
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
-        let mut renderer = pollster::block_on(Renderer::new(window.clone()));
+        let mut renderer = pollster::block_on(Renderer::new(
+            window.clone(),
+            (WORLD_CHUNKS * world::CHUNK_SIZE as i32).as_vec3(),
+        ));
         for chunk in self.world.chunk_positions() {
             renderer.upload_chunk_mesh(chunk, &mesher::build_chunk_mesh(&self.world, chunk));
         }
@@ -293,7 +296,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wanderer_stays_inside_the_world_walls() {
+    fn wanderer_stays_inside_the_world_border() {
         let world = world::terrain::generate(WORLD_CHUNKS, SEED);
         let mut players = test_players(&world);
         let inside = (WORLD_CHUNKS * world::CHUNK_SIZE as i32).as_vec3() - 1.0;
