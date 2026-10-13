@@ -13,6 +13,12 @@ struct Frame {
 @group(0) @binding(0)
 var<uniform> frame: Frame;
 
+/// Every scene pipeline writes lit colour and, for bloom, the light a surface gives off itself.
+struct SceneOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) emissive: vec4<f32>,
+};
+
 /// Light reaching a surface facing `normal`: the sky's ambient plus the sun or moon.
 fn light(normal: vec3<f32>) -> vec3<f32> {
     return frame.ambient + frame.light_color * max(dot(normal, frame.light_direction), 0.0);

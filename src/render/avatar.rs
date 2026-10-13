@@ -39,7 +39,6 @@ impl AvatarRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         frame_layout: &wgpu::BindGroupLayout,
-        color_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
     ) -> Self {
         let (vertices, indices) = avatar::build_mesh();
@@ -109,7 +108,7 @@ impl AvatarRenderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(color_format.into())],
+                targets: &super::SCENE_TARGETS,
             }),
             multiview_mask: None,
             cache: None,
