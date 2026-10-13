@@ -27,7 +27,7 @@ use texture::BlockTextures;
 use crate::mesher::{ChunkMesh, Vertex};
 use crate::sky::Sky;
 use sim::avatar::Avatar;
-use sim::world::{CHUNK_SIZE, terrain};
+use sim::world::{CHUNK_SIZE, Extent, terrain};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Colour targets of every scene pipeline, matching `SceneOutput` in frame.wgsl.
@@ -97,8 +97,8 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// `world_size` is the size of the world in blocks, for the border round its edge.
-    pub async fn new(window: Arc<Window>, world_size: Vec3) -> Self {
+    /// `world` is how far the world reaches, for the border round its edge.
+    pub async fn new(window: Arc<Window>, world: Extent) -> Self {
         let instance = wgpu::Instance::new(
             wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())),
         );
@@ -172,7 +172,7 @@ impl Renderer {
 
         let avatar = AvatarRenderer::new(&device, &queue, &frame_layout);
         let skybox = Skybox::new(&device, &queue, &frame_layout);
-        let border = Border::new(&device, &frame_layout, world_size);
+        let border = Border::new(&device, &frame_layout, world);
         let depth_view = create_depth_view(&device, &config);
         let post = PostProcess::new(&device, config.format, (config.width, config.height));
         Self {
