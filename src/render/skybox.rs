@@ -51,7 +51,7 @@ impl Skybox {
             "skybox",
             &shader,
             &[Some(frame_layout), Some(&layout)],
-            None,
+            &[],
             false,
         );
         Self {

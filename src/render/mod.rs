@@ -38,14 +38,19 @@ const SCENE_TARGETS: [Option<wgpu::ColorTargetState>; 2] = [
         write_mask: wgpu::ColorWrites::ALL,
     }),
 ];
-const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
-    0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Float32, 4 => Uint32
+/// Chunk vertices, then each chunk's world position as a one-instance attribute.
+const CHUNK_VERTEX_LAYOUTS: [Option<wgpu::VertexBufferLayout<'static>>; 2] = [
+    Some(wgpu::VertexBufferLayout {
+        array_stride: size_of::<Vertex>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &wgpu::vertex_attr_array![0 => Uint32],
+    }),
+    Some(wgpu::VertexBufferLayout {
+        array_stride: size_of::<[f32; 3]>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &wgpu::vertex_attr_array![1 => Float32x3],
+    }),
 ];
-const VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
-    array_stride: size_of::<Vertex>() as wgpu::BufferAddress,
-    step_mode: wgpu::VertexStepMode::Vertex,
-    attributes: &VERTEX_ATTRIBUTES,
-};
 
 /// Matches `Frame` in frame.wgsl, where each vec3 is padded out to 16 bytes.
 #[repr(C)]
@@ -142,7 +147,7 @@ impl Renderer {
             "chunk",
             &frame_shader(&device, "chunk", include_str!("shader.wgsl")),
             &[Some(&frame_layout), Some(&textures.layout)],
-            Some(VERTEX_LAYOUT),
+            &CHUNK_VERTEX_LAYOUTS,
             true,
         );
 
@@ -257,7 +262,8 @@ impl Renderer {
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
             for mesh in self.chunk_meshes.iter() {
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(1, mesh.origin_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
             self.avatar.draw(&mut pass, &self.frame_bind_group);
@@ -283,7 +289,7 @@ fn scene_pipeline(
     label: &str,
     shader: &wgpu::ShaderModule,
     bind_group_layouts: &[Option<&wgpu::BindGroupLayout>],
-    vertex_buffer: Option<wgpu::VertexBufferLayout>,
+    vertex_buffers: &[Option<wgpu::VertexBufferLayout>],
     depth_write: bool,
 ) -> wgpu::RenderPipeline {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -298,7 +304,7 @@ fn scene_pipeline(
             module: shader,
             entry_point: Some("vs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[vertex_buffer],
+            buffers: vertex_buffers,
         },
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
