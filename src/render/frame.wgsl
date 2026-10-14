@@ -16,6 +16,9 @@ struct Frame {
     sky_tint: vec3<f32>,
     /// 1 by day and 0 at night: how much of the skybox shows over the plain horizon colour.
     daylight: f32,
+    /// While the camera is inside rock, terrain at `p` with `dot(cut_plane.xyz, p) < cut_plane.w`
+    /// is cut away. All zeros, which cuts nothing, otherwise.
+    cut_plane: vec4<f32>,
 };
 
 /// Air within this many blocks of a camera at sea level is clear, and the clear stretch grows

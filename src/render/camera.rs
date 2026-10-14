@@ -1,5 +1,6 @@
 use glam::camera::rh::{proj::directx, view};
-use glam::{Mat4, Vec3, Vec4};
+use glam::{IVec3, Mat4, Vec3, Vec4};
+use sim::world::CHUNK_SIZE;
 
 /// A free camera described by where it is and which way it faces.
 pub struct Camera {
@@ -26,6 +27,13 @@ impl Camera {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
         Vec3::new(-sin_yaw * cos_pitch, sin_pitch, -cos_yaw * cos_pitch)
+    }
+
+    /// The plane `distance` ahead, facing the camera, as a normal and offset: a point `p` is on it
+    /// where `normal.dot(p) == offset`, and nearer the camera where it is less.
+    pub fn cut_plane(&self, distance: f32) -> Vec4 {
+        let forward = self.forward();
+        forward.extend(forward.dot(self.position) + distance)
     }
 
     /// WebGPU shares DirectX's clip space: Y up, depth in [0, 1].
@@ -60,6 +68,12 @@ impl Frustum {
             normal.dot(corner) + plane.w >= 0.0
         })
     }
+
+    /// Whether any of the chunk at chunk coordinate `chunk` might be in view.
+    pub fn contains_chunk(&self, chunk: IVec3) -> bool {
+        let min = (chunk * CHUNK_SIZE as i32).as_vec3();
+        self.intersects_box(min, min + CHUNK_SIZE as f32)
+    }
 }
 
 #[cfg(test)]
@@ -87,5 +101,19 @@ mod tests {
         let camera = Camera::looking_at(Vec3::new(10.0, 4.0, -1.0), target);
         let expected = (target - camera.position).normalize();
         assert!(camera.forward().abs_diff_eq(expected, 1e-5));
+    }
+
+    #[test]
+    fn the_cut_plane_stands_ahead_facing_the_camera() {
+        let camera = Camera::looking_at(Vec3::new(3.0, 50.0, -2.0), Vec3::new(10.0, 45.0, 20.0));
+        let plane = camera.cut_plane(4.0);
+        let beyond = |point: Vec3| plane.truncate().dot(point) - plane.w;
+        let ahead = |distance: f32| camera.position + camera.forward() * distance;
+        assert!(beyond(ahead(4.0)).abs() < 1e-4);
+        assert!(beyond(camera.position) < 0.0 && beyond(ahead(3.9)) < 0.0);
+        assert!(beyond(ahead(4.1)) > 0.0);
+        // A point off to the side at the same depth is on the plane too.
+        let side = camera.forward().cross(Vec3::Y).normalize();
+        assert!(beyond(ahead(4.0) + side * 7.0).abs() < 1e-4);
     }
 }

@@ -8,11 +8,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use glam::{IVec2, IVec3, Vec2};
-use sim::world::{CHUNK_SIZE, Extent, World};
+use glam::{IVec2, IVec3, Vec2, Vec3Swizzles};
+use sim::world::{CHUNK_SIZE, ChunkMap, Extent, World};
 
 use crate::mesher::{self, ChunkMesh};
 use crate::render::Renderer;
+use crate::visibility::{self, Connections};
 
 /// Horizontal distance from the camera to the nearest point of a chunk column for it to be
 /// drawn. Fog thickens to full strength by here.
@@ -26,6 +27,9 @@ pub struct MeshedArea {
     /// Chunk y coordinates of every column, bottom to top.
     levels: std::ops::RangeInclusive<i32>,
     meshed: HashSet<IVec2>,
+    /// Which sides of each chunk in a meshed column see each other, worked out with its mesh. Chunks
+    /// with nothing to draw still need theirs, since the view passes through them.
+    connections: ChunkMap<Connections>,
 }
 
 impl MeshedArea {
@@ -34,6 +38,7 @@ impl MeshedArea {
             columns: extent.chunk_columns().collect(),
             levels: extent.chunk_levels(),
             meshed: HashSet::new(),
+            connections: ChunkMap::default(),
         }
     }
 
@@ -45,6 +50,7 @@ impl MeshedArea {
         for column in self.drop_far(camera) {
             for chunk in self.chunks(column) {
                 renderer.upload_chunk_mesh(chunk, &ChunkMesh::default());
+                self.connections.remove(&chunk);
             }
         }
         let missing = self.missing(camera);
@@ -54,18 +60,19 @@ impl MeshedArea {
         let built = self.build(world, &missing, start, budget);
         let left = missing.len() - built.len();
         for (column, meshes) in built {
-            for (chunk, mesh) in self.chunks(column).zip(&meshes) {
+            for (chunk, (mesh, connections)) in self.chunks(column).zip(&meshes) {
                 renderer.upload_chunk_mesh(chunk, mesh);
+                self.connections.insert(chunk, *connections);
             }
             self.meshed.insert(column);
         }
         left
     }
 
-    /// Meshes the chunks of `columns`, nearest first, until `budget` has passed since `start`;
-    /// each worker finishes the column it is on, so at least one column is always built. The
+    /// Meshes the chunks of `columns` and works out which of their sides see each other, nearest first, until `budget` has passed
+    /// since `start`; each worker finishes the column it is on, so at least one column is always built. The
     /// world is only read, so workers share it without locks.
-    fn build(&self, world: &World, columns: &[IVec2], start: Instant, budget: Duration) -> Vec<(IVec2, Vec<ChunkMesh>)> {
+    fn build(&self, world: &World, columns: &[IVec2], start: Instant, budget: Duration) -> Vec<(IVec2, Vec<(ChunkMesh, Connections)>)> {
         let next = AtomicUsize::new(0);
         let workers = thread::available_parallelism().map_or(1, NonZeroUsize::get);
         thread::scope(|scope| {
@@ -74,7 +81,9 @@ impl MeshedArea {
                     scope.spawn(|| {
                         let mut built = Vec::new();
                         while let Some(&column) = columns.get(next.fetch_add(1, Ordering::Relaxed)) {
-                            let meshes = self.chunks(column).map(|chunk| mesher::build_chunk_mesh(world, chunk));
+                            let meshes = self
+                                .chunks(column)
+                                .map(|chunk| (mesher::build_chunk_mesh(world, chunk), visibility::connections(world, chunk)));
                             built.push((column, meshes.collect()));
                             if start.elapsed() >= budget {
                                 break;
@@ -95,6 +104,12 @@ impl MeshedArea {
     pub fn in_range(&self, camera: Vec2) -> usize {
         let near = |&&column: &&IVec2| distance(camera, column) <= VIEW_DISTANCE;
         self.columns.iter().filter(near).count()
+    }
+
+    /// Which sides of `chunk` see each other through it. Chunks not worked out yet, including any
+    /// outside the world, count as open, so the view is never wrongly stopped at them.
+    pub fn connections(&self, chunk: IVec3) -> Connections {
+        self.connections.get(&chunk).copied().unwrap_or(visibility::ALL)
     }
 
     fn chunks(&self, column: IVec2) -> impl Iterator<Item = IVec3> + use<> {
@@ -127,6 +142,11 @@ impl MeshedArea {
         missing.sort_by(|a, b| a.0.total_cmp(&b.0));
         missing.into_iter().map(|(_, column)| column).collect()
     }
+}
+
+/// Whether `chunk` is within the view distance of a camera at `camera`, measured horizontally.
+pub fn in_view_distance(camera: Vec2, chunk: IVec3) -> bool {
+    distance(camera, chunk.xz()) <= VIEW_DISTANCE
 }
 
 /// Horizontal distance from `point` to the nearest point of a chunk column.

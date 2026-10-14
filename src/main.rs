@@ -5,6 +5,7 @@ mod mesher;
 mod render;
 mod sky;
 mod spectator;
+mod visibility;
 
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
@@ -16,13 +17,13 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use glam::{IVec2, Vec2, Vec3, Vec3Swizzles, vec3};
+use glam::{IVec2, IVec3, Vec2, Vec3, Vec3Swizzles, vec3};
 use loading::Loading;
 use meshed_area::MeshedArea;
-use render::{Camera, Renderer};
+use render::{Camera, Frustum, Renderer};
 use sim::avatar::{Avatar, Skin};
 use sim::player::{JUMP_HEIGHTS, Player, TICK_RATE};
-use sim::world::{Extent, World};
+use sim::world::{CHUNK_SIZE, ChunkSet, Extent, World};
 use sky::{DAY_TICKS, Sky};
 use spectator::Spectator;
 
@@ -48,6 +49,9 @@ struct App {
     camera: Camera,
     spectator: Spectator,
     mouse_captured: bool,
+    /// Whether chunks walled off from the camera by terrain are left undrawn. `CULLING_KEY` turns
+    /// it off and on, to compare.
+    culling: bool,
     last_frame: Instant,
     timings: Timings,
 }
@@ -63,6 +67,9 @@ struct Timings {
     worst_draw_seconds: f32,
     ticks: u32,
     tick_seconds: f32,
+    chunks_drawn: usize,
+    /// Time spent walking out from the camera to find the chunks it might see, if culling is on.
+    walk_seconds: Option<f32>,
 }
 
 impl Timings {
@@ -70,11 +77,14 @@ impl Timings {
     fn title(&self, seed: u32) -> String {
         let ms = |seconds: f32, count: u32| seconds * 1000.0 / count.max(1) as f32;
         format!(
-            "Mineless | seed {seed} | {:.0} fps | draw {:.1} ms, worst {:.1} ms | tick {:.2} ms",
+            "Mineless | seed {seed} | {:.0} fps | draw {:.1} ms, worst {:.1} ms | tick {:.2} ms | {} chunks, {}",
             self.frames as f32 / self.frame_seconds,
             ms(self.draw_seconds, self.draws),
             ms(self.worst_draw_seconds, 1),
             ms(self.tick_seconds, self.ticks),
+            self.chunks_drawn / self.draws.max(1) as usize,
+            self.walk_seconds
+                .map_or("culling off".to_string(), |walk| format!("walk {:.2} ms", ms(walk, self.frames))),
         )
     }
 }
@@ -101,6 +111,9 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.physical_key == PhysicalKey::Code(KeyCode::Escape) {
                     self.mouse_captured = set_mouse_capture(window, false);
+                }
+                if event.physical_key == PhysicalKey::Code(CULLING_KEY) && event.state == ElementState::Pressed && !event.repeat {
+                    self.culling = !self.culling;
                 }
                 self.spectator.key(&event);
             }
@@ -154,20 +167,33 @@ impl ApplicationHandler for App {
                 let alpha = self.unsimulated * TICK_RATE;
                 let avatars: Vec<Avatar> = self.players.iter().map(|p| p.avatar(alpha)).collect();
                 let day_fraction = ((self.ticks % DAY_TICKS) as f32 + alpha) / DAY_TICKS as f32;
-                let draw = renderer.render(
+                // Inside rock the terrain is drawn cut away. The walk assumes the camera starts in open
+                // space, so culling waits until it is back in the open.
+                let cutaway = self.world.block(self.camera.position.floor().as_ivec3()).is_solid();
+                let culling = self.culling && !cutaway;
+                let walk_start = Instant::now();
+                let seen = culling.then(|| seen_chunks(&self.camera, &renderer.frustum(&self.camera), &self.meshed));
+                let walk_seconds = walk_start.elapsed().as_secs_f32();
+                let drawn = renderer.render(
                     &self.camera,
                     &Sky::at(day_fraction),
                     day_fraction * DAY_TICKS as f32 / TICK_RATE,
                     &avatars,
+                    seen.as_ref(),
+                    cutaway,
                 );
                 let timings = &mut self.timings;
                 timings.frames += 1;
                 timings.frame_seconds += seconds;
-                if let Some(draw) = draw {
-                    let draw = draw.as_secs_f32();
+                if culling {
+                    *timings.walk_seconds.get_or_insert(0.0) += walk_seconds;
+                }
+                if let Some(drawn) = drawn {
+                    let draw = drawn.time.as_secs_f32();
                     timings.draws += 1;
                     timings.draw_seconds += draw;
                     timings.worst_draw_seconds = timings.worst_draw_seconds.max(draw);
+                    timings.chunks_drawn += drawn.chunks;
                 }
                 if timings.frame_seconds >= 1.0 {
                     window.set_title(&timings.title(self.seed));
@@ -187,6 +213,19 @@ impl ApplicationHandler for App {
             self.spectator.look(&mut self.camera, dx, dy);
         }
     }
+}
+
+/// The chunks `camera` might see past the terrain, out of those in `frustum` and the view distance.
+fn seen_chunks(camera: &Camera, frustum: &Frustum, meshed: &MeshedArea) -> ChunkSet {
+    let camera_chunk = camera.position.floor().as_ivec3().div_euclid(IVec3::splat(CHUNK_SIZE as i32));
+    // Space outside the world counts as open air, so a camera above it or past the border walks in
+    // from there; the walk just mustn't wander off into that air.
+    let levels = WORLD.chunk_levels();
+    let (lowest, highest) = ((*levels.start()).min(camera_chunk.y), (*levels.end()).max(camera_chunk.y));
+    let in_view = |chunk: IVec3| {
+        (lowest..=highest).contains(&chunk.y) && meshed_area::in_view_distance(camera.position.xz(), chunk) && frustum.contains_chunk(chunk)
+    };
+    visibility::visible_chunks(camera_chunk, |chunk| meshed.connections(chunk), in_view)
 }
 
 /// Click to capture the mouse for looking around, Escape to give it back. Returns whether the
@@ -256,6 +295,8 @@ const MAX_CATCH_UP: f32 = 0.25;
 /// stays responsive.
 const LOADING_SLICE: Duration = Duration::from_millis(12);
 const LOADING_SCREEN_INTERVAL: Duration = Duration::from_millis(100);
+/// Turns culling of chunks walled off from the camera off and on, to compare. V for visibility.
+const CULLING_KEY: KeyCode = KeyCode::KeyV;
 /// Meshing done per frame as the camera brings chunks into range: far chunks may appear a
 /// little late, but the frame rate doesn't hitch.
 const MESHING_SLICE: Duration = Duration::from_millis(4);
@@ -359,6 +400,7 @@ fn main() {
         renderer: None,
         spectator: Spectator::default(),
         mouse_captured: false,
+        culling: true,
         last_frame: Instant::now(),
         timings: Timings::default(),
     };

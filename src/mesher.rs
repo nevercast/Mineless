@@ -385,7 +385,8 @@ mod tests {
     }
 
     /// Hashes the meshes of every chunk of a small generated world, recorded before chunks could
-    /// be stored as one block and before meshing skipped any, so neither changed what is drawn.
+    /// be stored as one block and before meshing skipped any, so neither changed what is drawn, and
+    /// recorded again when caves were carved into it.
     #[test]
     fn meshes_of_a_generated_world_are_unchanged() {
         let extent = Extent {
@@ -394,7 +395,7 @@ mod tests {
         };
         let world = terrain::generate(extent, 5);
         let uniform: Vec<Block> = extent.chunk_positions().filter_map(|chunk| world.uniform_chunk(chunk)).collect();
-        assert!(uniform.contains(&Block::Air) && uniform.contains(&Block::Stone));
+        assert!(uniform.contains(&Block::Air));
         let sea_surface = |x, z| IVec3::new(x, terrain::SEA_LEVEL - 1, z);
         let has_sea = (-24..24).any(|x| (-24..24).any(|z| world.block(sea_surface(x, z)) == Block::Water));
         assert!(has_sea);
@@ -413,7 +414,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(hash, 0x6f7b_23a7_2d2a_9601);
+        assert_eq!(hash, 0xa586_bb82_f8a1_8b21);
     }
 
     #[test]

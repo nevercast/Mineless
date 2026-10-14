@@ -3,7 +3,7 @@
 //! lump of floating land, all inside a full-height border that keeps walkers from falling off
 //! the edge of the world. Climate and biome then decide what the top few blocks of every surface are
 //! made of: sandy and gravelly coasts and sea floors, grass, bare rock on cliffs and snow on cold
-//! high ground.
+//! high ground. Last, caves are carved beneath it all.
 
 use std::num::NonZeroUsize;
 use std::panic::resume_unwind;
@@ -13,19 +13,17 @@ use std::time::{Duration, Instant};
 
 use glam::{IVec2, IVec3, Vec2, Vec3, Vec3Swizzles};
 
+mod caves;
 mod noise;
-mod sea;
 mod trees;
 
 use super::chunk::Chunk;
 use super::{Block, CHUNK_SIZE, Extent, SIZE, World};
 use noise::{NOISE_BOUND, fractal, gradient_2d, gradient_3d, lerp, smoothstep};
-use sea::SeaFill;
 
 /// The height the terrain is shaped for. The world may be taller, leaving air above it.
 pub const HEIGHT: i32 = 128;
-/// Air below this height that is open to the sea will be water; the sea surface is the top of
-/// the row below it.
+/// Every open cell below this height is water; the sea surface is the top of the row below it.
 pub const SEA_LEVEL: i32 = 40;
 
 /// Where the low ground sits relative to the sea, and how far it strays above and below.
@@ -57,7 +55,7 @@ const RELIEF_START: f32 = 0.06;
 const RELIEF_FULL: f32 = 0.18;
 
 /// Rows at the bottom that are always solid, so nothing falls out of the world.
-const BEDROCK_ROWS: i32 = 4;
+pub(super) const BEDROCK_ROWS: i32 = 4;
 /// Density falls by this much per block above `CEILING_START`, so peaks round off well below
 /// the top of the world instead of being sliced flat by it.
 const CEILING_START: i32 = 112;
@@ -128,7 +126,6 @@ pub fn generate(extent: Extent, seed: u32) -> World {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stage {
     Chunks,
-    Sea,
     Done,
 }
 
@@ -139,8 +136,6 @@ pub struct Generation {
     extent: Extent,
     columns: Vec<IVec2>,
     generated: usize,
-    chunks: Vec<IVec3>,
-    sea: SeaFill,
 }
 
 impl Generation {
@@ -151,16 +146,12 @@ impl Generation {
             extent,
             columns: extent.chunk_columns().collect(),
             generated: 0,
-            chunks: extent.chunk_positions().collect(),
-            sea: SeaFill::new(extent),
         }
     }
 
     pub fn stage(&self) -> Stage {
         if self.generated < self.columns.len() {
             Stage::Chunks
-        } else if !self.sea.done(&self.chunks) {
-            Stage::Sea
         } else {
             Stage::Done
         }
@@ -170,7 +161,6 @@ impl Generation {
     pub fn progress(&self) -> f32 {
         match self.stage() {
             Stage::Chunks => self.generated as f32 / self.columns.len() as f32,
-            Stage::Sea => self.sea.progress(&self.chunks),
             Stage::Done => 1.0,
         }
     }
@@ -188,7 +178,6 @@ impl Generation {
                         }
                     }
                 }
-                Stage::Sea => self.sea.work(world, &self.chunks),
                 Stage::Done => return,
             }
             if start.elapsed() >= budget {
@@ -209,7 +198,7 @@ impl Generation {
                     scope.spawn(|| {
                         let mut generated = Vec::new();
                         while let Some(&column) = columns.get(next.fetch_add(1, Ordering::Relaxed)) {
-                            generated.push((column, generate_column(seed, column, extent)));
+                            generated.push((column, generate_column(seed, column, extent, true)));
                             if start.elapsed() >= budget {
                                 break;
                             }
@@ -237,8 +226,9 @@ fn workers() -> usize {
 /// The chunks of the column at chunk coordinate `column`, bottom to top, in a world reaching
 /// over `extent`. They come from nothing but the seed and those two, so columns come out the same
 /// whatever order they are generated in. The terrain of the column's blocks is worked out once
-/// and shared by every chunk in it.
-fn generate_column(seed: u32, column: IVec2, extent: Extent) -> Vec<Chunk> {
+/// and shared by every chunk in it. Without `caves`, the terrain comes out as it was before
+/// carving, which tests compare against.
+fn generate_column(seed: u32, column: IVec2, extent: Extent, caves: bool) -> Vec<Chunk> {
     let origin = IVec3::new(column.x, 0, column.y) * SIZE;
     let columns = Neighbourhood::around(seed, origin);
     let blocks: Vec<[Block; HEIGHT as usize]> = (0..SIZE)
@@ -246,6 +236,23 @@ fn generate_column(seed: u32, column: IVec2, extent: Extent) -> Vec<Chunk> {
         .map(|(x, z)| Surface::at(seed, x, z, &columns).blocks(columns.column(x, z)))
         .collect();
     let trees = trees::reaching(seed, origin, &columns, extent);
+    let column_index = |x: i32, z: i32| ((x - origin.x) * SIZE + z - origin.z) as usize;
+    let tops: Vec<i32> = (0..SIZE)
+        .flat_map(|i| (0..SIZE).map(move |k| (origin.x + i, origin.z + k)))
+        .map(|(x, z)| columns.top(x, z))
+        .collect();
+    let carving = caves::Caves::around(seed, origin, tops.iter().copied().max().unwrap_or(0));
+    // A cell stays if it opens a cave through anything but bare rock at the top of its column, or
+    // if water lies next to it, so the sea never meets a dry cave. Water is exactly the open cells
+    // below sea level that shaping leaves, so the neighbours' terrain says where it is without
+    // reading other chunks.
+    let keep = |position: IVec3| {
+        let column = column_index(position.x, position.z);
+        let top = tops[column];
+        let bare_rock = top > 0 && blocks[column][(top - 1) as usize] == Block::Stone;
+        let water = |p: IVec3| p.y < SEA_LEVEL && !columns.column(p.x, p.z).solid(p.y);
+        !caves::entrance_allowed(position.y, top, bare_rock) || NEIGHBOURS.iter().any(|&step| water(position + step))
+    };
     extent
         .chunk_levels()
         .map(|level| {
@@ -275,12 +282,18 @@ fn generate_column(seed: u32, column: IVec2, extent: Extent) -> Vec<Chunk> {
             }
             if origin.y < HEIGHT {
                 trees::plant(&mut chunk, origin, &trees);
+                if caves {
+                    carving.carve(&mut chunk, origin, keep);
+                }
             }
             chunk.compact();
             chunk
         })
         .collect()
 }
+
+/// The steps to a cell's six face neighbours.
+const NEIGHBOURS: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
 
 /// The block columns of one chunk column and a border round it, with their tops, since the cliff test and
 /// trees look at neighbouring columns.
@@ -362,6 +375,13 @@ fn snowy(temperature: f32, y: i32) -> bool {
     y >= SEA_LEVEL && temperature < LAPSE * (y - SEA_LEVEL) as f32
 }
 
+/// What fills a cell the terrain leaves open: sea below sea level, sky above. Without caves, the
+/// hollows below sea level all but always reach the sea, so this needs no flood to find them, and
+/// each chunk gets its water as it is shaped.
+fn open(y: i32) -> Block {
+    if y < SEA_LEVEL { Block::Water } else { Block::Air }
+}
+
 /// What the surfaces of one column are made of.
 struct Surface {
     top: i32,
@@ -412,7 +432,7 @@ impl Surface {
     /// floating land are dressed as well as the column top.
     fn block(&self, column: &Column, y: i32) -> Block {
         if !column.solid(y) {
-            return Block::Air;
+            return open(y);
         }
         let Some(depth) = (0..self.run).find(|&depth| !column.solid(y + depth + 1)) else {
             return Block::Stone;
@@ -430,6 +450,7 @@ impl Surface {
         for (y, block) in (0..HEIGHT).zip(&mut blocks).rev() {
             if !column.solid(y) {
                 exposed_top = None;
+                *block = open(y);
                 continue;
             }
             let top = *exposed_top.get_or_insert(y);
@@ -647,10 +668,10 @@ mod tests {
         columns(seed).iter().map(Column::top).collect()
     }
 
-    /// Generates each column on its own into `world`.
-    fn insert_columns(world: &mut World, seed: u32, extent: Extent, columns: impl Iterator<Item = IVec2>) {
+    /// Generates each column on its own into `world`, with or without caves.
+    fn insert_columns(world: &mut World, seed: u32, extent: Extent, columns: impl Iterator<Item = IVec2>, caves: bool) {
         for column in columns {
-            for (y, chunk) in extent.chunk_levels().zip(generate_column(seed, column, extent)) {
+            for (y, chunk) in extent.chunk_levels().zip(generate_column(seed, column, extent, caves)) {
                 world.insert(IVec3::new(column.x, y, column.y), chunk);
             }
         }
@@ -658,7 +679,7 @@ mod tests {
 
     /// The chunk at `position`, cut from its column generated on its own.
     fn generate_chunk(seed: u32, position: IVec3, extent: Extent) -> Chunk {
-        generate_column(seed, position.xz(), extent).swap_remove(position.y as usize)
+        generate_column(seed, position.xz(), extent, true).swap_remove(position.y as usize)
     }
 
     #[test]
@@ -666,9 +687,9 @@ mod tests {
         let columns: Vec<IVec2> = EXTENT.chunk_columns().collect();
         assert!(columns.iter().any(|column| column.cmplt(IVec2::ZERO).any()));
         let mut in_order = World::default();
-        insert_columns(&mut in_order, 5, EXTENT, columns.iter().copied());
+        insert_columns(&mut in_order, 5, EXTENT, columns.iter().copied(), true);
         let mut reversed = World::default();
-        insert_columns(&mut reversed, 5, EXTENT, columns.iter().rev().copied());
+        insert_columns(&mut reversed, 5, EXTENT, columns.iter().rev().copied(), true);
         for position in EXTENT.chunk_positions() {
             assert!(in_order.chunks[&position] == reversed.chunks[&position], "{position}");
         }
@@ -685,8 +706,7 @@ mod tests {
         assert_eq!(world.block(IVec3::new(-24, 20, 5)), Block::WorldBorder);
     }
 
-    /// A hash of every block of a generated world, recorded before chunks could be stored as one
-    /// block and before the sea fill could be sliced, so neither changed the world.
+    /// A hash of every block of a generated world, recorded when caves were carved into it.
     #[test]
     fn the_world_is_unchanged_block_for_block() {
         let world = generate(EXTENT, 5);
@@ -700,7 +720,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(hash, 0xff3f_5c37_a710_5744);
+        assert_eq!(hash, 0x6ae8_ba3a_b156_bda4);
     }
 
     #[test]
@@ -712,18 +732,71 @@ mod tests {
         let first_slice = world.chunks.len() / EXTENT.chunk_levels().count();
         assert!((1..=workers()).contains(&first_slice), "{first_slice}");
         let mut slices = 1;
-        let mut seen_sea = false;
         while generation.stage() != Stage::Done {
-            seen_sea |= generation.stage() == Stage::Sea;
             let progress = generation.progress();
             assert!((0.0..=1.0).contains(&progress), "{progress}");
             generation.work(&mut world, Duration::ZERO);
             slices += 1;
         }
-        assert!(seen_sea && slices > EXTENT.chunk_columns().count() / workers() + 1);
+        assert!(slices >= EXTENT.chunk_columns().count().div_ceil(workers()));
         assert_eq!(world.chunks.len(), whole.chunks.len());
         for (position, chunk) in &whole.chunks {
             assert!(world.chunks[position] == *chunk, "{position}");
+        }
+    }
+
+    /// A world with a stretch of sea, a coast and sea floor.
+    const SEA_WORLD: Extent = Extent {
+        half_width: 48,
+        height: HEIGHT,
+    };
+
+    #[test]
+    fn open_cells_below_sea_level_are_water_and_none_above_it() {
+        let world = generate(SEA_WORLD, 6);
+        let (min, max) = (SEA_WORLD.min(), SEA_WORLD.max());
+        let mut water = 0;
+        for x in min.x..max.x {
+            for z in min.z..max.z {
+                if SEA_WORLD.on_edge(x, z) {
+                    continue;
+                }
+                let column = Lattice::around(6, IVec3::new(x, 0, z).div_euclid(IVec3::splat(SIZE)) * SIZE).column(x, z);
+                for y in 0..HEIGHT {
+                    let block = world.block(IVec3::new(x, y, z));
+                    if y < SEA_LEVEL {
+                        // Caves leave dry air below sea level, but only where shaping left rock.
+                        let open = !column.solid(y);
+                        assert_eq!(block == Block::Water, open, "{block:?} at {x}, {y}, {z}");
+                        water += usize::from(open);
+                    } else {
+                        assert!(block != Block::Water, "water at {x}, {y}, {z}");
+                    }
+                }
+            }
+        }
+        assert!(water > 0);
+    }
+
+    #[test]
+    fn a_chunk_of_sea_floor_generated_alone_has_its_water() {
+        let level = (SEA_LEVEL - 1) / SIZE;
+        let sea_floor = SEA_WORLD
+            .chunk_columns()
+            .map(|column| generate_chunk(6, column.extend(level).xzy(), SEA_WORLD))
+            .find(|chunk| {
+                let blocks: Vec<Block> = (0..CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
+                    .map(|i| chunk.get(i / (CHUNK_SIZE * CHUNK_SIZE), i / CHUNK_SIZE % CHUNK_SIZE, i % CHUNK_SIZE))
+                    .collect();
+                blocks.contains(&Block::Water) && blocks.iter().any(|&block| block != Block::Water && block != Block::Air)
+            })
+            .expect("the sea world has sea floor");
+        for x in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for y in 0..(SEA_LEVEL - level * SIZE) as usize {
+                    assert!(sea_floor.get(x, y, z) != Block::Air, "{x}, {y}, {z}");
+                }
+            }
         }
     }
 
@@ -808,16 +881,24 @@ mod tests {
     /// seeds 0-3. Built once and shared, since it is the slowest part of these tests.
     fn dressed() -> &'static [World] {
         static WORLDS: std::sync::OnceLock<Vec<World>> = std::sync::OnceLock::new();
-        WORLDS.get_or_init(|| {
-            (0..4)
-                .map(|seed| {
-                    let mut world = World::default();
-                    let columns = (-3..3).flat_map(|x| (-3..3).map(move |z| IVec2::new(x, z)));
-                    insert_columns(&mut world, seed, FULL_WORLD, columns);
-                    world
-                })
-                .collect()
-        })
+        WORLDS.get_or_init(|| dressed_area(true))
+    }
+
+    /// The same area before caves were carved.
+    fn uncarved() -> &'static [World] {
+        static WORLDS: std::sync::OnceLock<Vec<World>> = std::sync::OnceLock::new();
+        WORLDS.get_or_init(|| dressed_area(false))
+    }
+
+    fn dressed_area(caves: bool) -> Vec<World> {
+        (0..4)
+            .map(|seed| {
+                let mut world = World::default();
+                let columns = (-3..3).flat_map(|x| (-3..3).map(move |z| IVec2::new(x, z)));
+                insert_columns(&mut world, seed, FULL_WORLD, columns, caves);
+                world
+            })
+            .collect()
     }
 
     /// Every block of the dressed area with its seed and position.
@@ -839,7 +920,7 @@ mod tests {
     }
 
     fn exposed(world: &World, position: IVec3) -> bool {
-        world.block(position) != Block::Air && world.block(position + IVec3::Y) == Block::Air
+        world.block(position).is_solid() && !world.block(position + IVec3::Y).is_solid()
     }
 
     #[test]
@@ -958,7 +1039,8 @@ mod tests {
     }
 
     /// Hashes of chunks generated for seed 142 before the world was centred, when it spanned
-    /// 0..320. Terrain depends only on world position, so the same chunks come out the same.
+    /// 0..320, and before caves. Terrain depends only on world position, so the same chunks come
+    /// out the same.
     #[test]
     fn centring_the_world_did_not_move_the_terrain() {
         for (position, recorded) in [
@@ -966,7 +1048,7 @@ mod tests {
             (IVec3::new(3, 3, 7), 0x0c86_dc2e_6ed6_9068),
             (IVec3::new(6, 2, 3), 0x2eb0_1485_666c_8f55),
         ] {
-            let chunk = generate_chunk(142, position, FULL_WORLD);
+            let chunk = generate_column(142, position.xz(), FULL_WORLD, false).swap_remove(position.y as usize);
             let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
             for y in 0..CHUNK_SIZE {
                 for z in 0..CHUNK_SIZE {
@@ -997,19 +1079,77 @@ mod tests {
     #[test]
     fn dressing_and_trees_keep_the_shape() {
         for seed in 0..4 {
-            let world = &dressed()[seed as usize];
+            let world = &uncarved()[seed as usize];
             let lattice = Lattice::around(seed, IVec3::new(-16, 0, -16));
             for x in -16..0 {
                 for z in -16..0 {
                     let column = lattice.column(x, z);
                     for y in 0..HEIGHT {
                         let block = world.block(IVec3::new(x, y, z));
-                        let solid = block != Block::Air && !is_tree(block);
+                        let solid = block.is_solid() && !is_tree(block);
                         assert_eq!(solid, column.solid(y), "{x}, {y}, {z}");
                     }
                 }
             }
         }
+    }
+
+    /// Every cell caves carved in the dressed area, with its seed, and the world before carving.
+    fn carved_cells() -> impl Iterator<Item = (u32, IVec3, &'static World)> {
+        dressed_blocks().filter_map(|(seed, position, block)| {
+            let before = &uncarved()[seed as usize];
+            (block != before.block(position)).then_some((seed, position, before))
+        })
+    }
+
+    #[test]
+    fn caves_carve_only_terrain_away_from_water_and_open_only_in_bare_rock() {
+        let (mut carved, mut mouths) = (0, 0);
+        for (seed, position, before) in carved_cells() {
+            carved += 1;
+            let was = before.block(position);
+            assert!(
+                matches!(was, Block::Stone | Block::Dirt | Block::Gravel | Block::Sand),
+                "{was:?} carved at {position}"
+            );
+            assert_eq!(dressed()[seed as usize].block(position), Block::Air);
+            assert!(position.y >= BEDROCK_ROWS, "carved the floor at {position}");
+            for step in NEIGHBOURS {
+                assert_ne!(before.block(position + step), Block::Water, "carved next to water at {position}");
+            }
+            let top = before.column_top(position.x, position.z);
+            if position.y >= top - 3 {
+                mouths += 1;
+                let surface = before.block(position.with_y(top - 1));
+                assert_eq!(surface, Block::Stone, "opened through {surface:?} at {position}");
+            }
+        }
+        assert!(carved > 0 && mouths > 0, "{carved} carved, {mouths} in column tops");
+    }
+
+    #[test]
+    fn no_dry_cave_touches_the_sea() {
+        for (seed, position, block) in dressed_blocks() {
+            if block == Block::Air && position.y < SEA_LEVEL {
+                for step in NEIGHBOURS {
+                    assert_ne!(dressed()[seed as usize].block(position + step), Block::Water, "{position}");
+                }
+            }
+        }
+    }
+
+    /// Tunnels and the odd chamber take a few percent of the ground beneath the column tops.
+    #[test]
+    fn caves_take_a_few_percent_of_the_underground() {
+        let underground = dressed_blocks()
+            .filter(|&(seed, position, _)| {
+                let before = &uncarved()[seed as usize];
+                let block = before.block(position);
+                position.y >= BEDROCK_ROWS && block.is_solid() && !is_tree(block)
+            })
+            .count();
+        let share = carved_cells().count() as f32 / underground as f32;
+        assert!((0.02..=0.045).contains(&share), "{share}");
     }
 
     /// The surfaces of every column in the chunk columns from `first` to `last`, inclusive.
@@ -1070,7 +1210,7 @@ mod tests {
         let mut world = World::default();
         let (low, high) = (IVec3::new(4, 4, 2), IVec3::new(5, 5, 4));
         let columns = (low.x..=high.x).flat_map(|x| (low.z..=high.z).map(move |z| IVec2::new(x, z)));
-        insert_columns(&mut world, BEACH_AND_FLOATING, FULL_WORLD, columns);
+        insert_columns(&mut world, BEACH_AND_FLOATING, FULL_WORLD, columns, true);
         let (min, max) = (low * SIZE, (high + 1) * SIZE - 1);
         let ground = |position: IVec3| {
             let block = world.block(position);

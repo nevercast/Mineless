@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytemuck::{Pod, Zeroable};
-use glam::{IVec3, Mat4, Vec2, Vec3};
+use glam::{IVec3, Mat4, Vec2, Vec3, Vec4};
 use winit::window::Window;
 
 mod avatar;
@@ -16,11 +16,10 @@ mod skins;
 mod skybox;
 mod texture;
 
-pub use camera::Camera;
+pub use camera::{Camera, Frustum};
 
 use avatar::AvatarRenderer;
 use border::Border;
-use camera::Frustum;
 use chunk_meshes::ChunkMeshes;
 use loading::LoadingScreen;
 use post::{HDR_FORMAT, PostProcess};
@@ -28,10 +27,10 @@ use skybox::Skybox;
 use texture::BlockTextures;
 
 use crate::meshed_area::VIEW_DISTANCE;
-use crate::mesher::{ChunkMesh, Vertex};
+use crate::mesher::{ChunkMesh, Tile, Vertex};
 use crate::sky::Sky;
 use sim::avatar::Avatar;
-use sim::world::{CHUNK_SIZE, Extent, terrain};
+use sim::world::{CHUNK_SIZE, ChunkSet, Extent, terrain};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Colour targets of every scene pipeline, matching `SceneOutput` in frame.wgsl.
@@ -79,7 +78,12 @@ struct FrameUniforms {
     _pad4: f32,
     sky_tint: Vec3,
     daylight: f32,
+    cut_plane: Vec4,
 }
+
+/// How far ahead of a camera inside rock the cutaway's plane stands, in blocks: far enough to see
+/// the tunnels round it in 3D.
+const CUT: f32 = 4.0;
 
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
@@ -89,6 +93,8 @@ pub struct Renderer {
     depth_view: wgpu::TextureView,
     post: PostProcess,
     pipeline: wgpu::RenderPipeline,
+    /// Draws terrain instead of `pipeline` while the camera is inside rock.
+    cutaway_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
     chunk_meshes: ChunkMeshes,
     water_meshes: ChunkMeshes,
@@ -154,24 +160,7 @@ impl Renderer {
         });
 
         let textures = BlockTextures::load(&device, &queue);
-        let chunk_shader = frame_shader(&device, "chunk", include_str!("shader.wgsl"));
-        let chunk_bind_groups = [Some(&frame_layout), Some(&textures.layout)];
-        let pipeline = scene_pipeline(
-            &device,
-            "chunk",
-            &chunk_shader,
-            &chunk_bind_groups,
-            &CHUNK_VERTEX_LAYOUTS,
-            Layer::Opaque,
-        );
-        let water_pipeline = scene_pipeline(
-            &device,
-            "water",
-            &chunk_shader,
-            &chunk_bind_groups,
-            &CHUNK_VERTEX_LAYOUTS,
-            Layer::Translucent,
-        );
+        let [pipeline, cutaway_pipeline, water_pipeline] = chunk_pipelines(&device, &frame_layout, &textures.layout);
 
         let avatar = AvatarRenderer::new(&device, &queue, &frame_layout);
         let skybox = Skybox::new(&device, &queue, &frame_layout);
@@ -187,6 +176,7 @@ impl Renderer {
             depth_view,
             post,
             pipeline,
+            cutaway_pipeline,
             water_pipeline,
             chunk_meshes: ChunkMeshes::default(),
             water_meshes: ChunkMeshes::default(),
@@ -248,13 +238,32 @@ impl Renderer {
         self.queue.present(frame);
     }
 
-    /// `time` is seconds since midnight, for animation. Returns how long the frame took to draw,
-    /// CPU and GPU together, or `None` if there was no frame to draw into.
-    pub fn render(&mut self, camera: &Camera, sky: &Sky, time: f32, avatars: &[Avatar]) -> Option<Duration> {
+    /// What `camera` can see with this window's shape.
+    pub fn frustum(&self, camera: &Camera) -> Frustum {
+        Frustum::new(self.view_projection(camera))
+    }
+
+    fn view_projection(&self, camera: &Camera) -> Mat4 {
+        camera.view_projection(self.config.width as f32 / self.config.height as f32)
+    }
+
+    /// `time` is seconds since midnight, for animation. Only chunks in `seen` are drawn, if it is
+    /// given. With `cutaway`, for a camera inside rock, terrain and water nearer than a plane `CUT`
+    /// ahead are left out and the rock the plane passes through is drawn as a cross-section on it.
+    /// Returns what was drawn and how long it took, or `None` if there was no frame to draw into.
+    pub fn render(
+        &mut self,
+        camera: &Camera,
+        sky: &Sky,
+        time: f32,
+        avatars: &[Avatar],
+        seen: Option<&ChunkSet>,
+        cutaway: bool,
+    ) -> Option<Drawn> {
         // Acquiring the frame is where vsync blocks, so the draw time starts after it.
         let frame = self.acquire_frame()?;
         let draw_start = Instant::now();
-        let view_projection = camera.view_projection(self.config.width as f32 / self.config.height as f32);
+        let view_projection = self.view_projection(camera);
         self.queue.write_buffer(
             &self.frame_buffer,
             0,
@@ -269,6 +278,8 @@ impl Renderer {
                 fog_color: sky.horizon,
                 sky_tint: sky.skybox_tint,
                 daylight: sky.daylight,
+                // All zeros cuts nothing.
+                cut_plane: if cutaway { camera.cut_plane(CUT) } else { Vec4::ZERO },
                 ..Zeroable::zeroed()
             }),
         );
@@ -276,6 +287,7 @@ impl Renderer {
 
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut drawn_chunks = ChunkSet::default();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("main"),
@@ -304,11 +316,12 @@ impl Renderer {
             });
             let frustum = Frustum::new(view_projection);
             self.skybox.draw(&mut pass, &self.frame_bind_group);
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(if cutaway { &self.cutaway_pipeline } else { &self.pipeline });
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
-            for (_, mesh) in self.chunk_meshes.visible(&frustum) {
+            for (chunk, mesh) in self.chunk_meshes.visible(&frustum, seen) {
                 draw_chunk(&mut pass, mesh);
+                drawn_chunks.insert(chunk);
             }
             self.avatar.draw(&mut pass, &self.frame_bind_group);
             // The border is nearly always the farthest translucent thing, so it goes under water.
@@ -316,7 +329,7 @@ impl Renderer {
 
             // Water blends over everything opaque, far chunks first so nearer water blends over
             // them. Faces within a chunk are unsorted; flat still water of one colour hides that.
-            let mut water: Vec<_> = self.water_meshes.visible(&frustum).collect();
+            let mut water: Vec<_> = self.water_meshes.visible(&frustum, seen).collect();
             let distance = |chunk: IVec3| {
                 let centre = (chunk.as_vec3() + 0.5) * CHUNK_SIZE as f32;
                 centre.distance_squared(camera.position)
@@ -325,8 +338,9 @@ impl Renderer {
             pass.set_pipeline(&self.water_pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
-            for (_, mesh) in water {
+            for (chunk, mesh) in water {
                 draw_chunk(&mut pass, mesh);
+                drawn_chunks.insert(chunk);
             }
         }
         self.post.draw(&mut encoder, &view);
@@ -335,10 +349,21 @@ impl Renderer {
         // one frame's GPU work with the next frame's CPU work, which costs nothing while vsync
         // paces the frames. A failed wait means a lost device, which the next frame reports.
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-        let draw = draw_start.elapsed();
+        let time = draw_start.elapsed();
         self.queue.present(frame);
-        Some(draw)
+        Some(Drawn {
+            time,
+            chunks: drawn_chunks.len(),
+        })
     }
+}
+
+/// What a frame drew.
+pub struct Drawn {
+    /// How long drawing took, CPU and GPU together.
+    pub time: Duration,
+    /// Chunks with terrain or water drawn.
+    pub chunks: usize,
 }
 
 fn draw_chunk(pass: &mut wgpu::RenderPass, mesh: &chunk_meshes::GpuMesh) {
@@ -348,11 +373,33 @@ fn draw_chunk(pass: &mut wgpu::RenderPass, mesh: &chunk_meshes::GpuMesh) {
     pass.draw_indexed(0..mesh.index_count, 0, 0..1);
 }
 
+/// The pipelines terrain is drawn with: opaque, opaque cut away for a camera inside rock, and
+/// water.
+fn chunk_pipelines(
+    device: &wgpu::Device,
+    frame_layout: &wgpu::BindGroupLayout,
+    texture_layout: &wgpu::BindGroupLayout,
+) -> [wgpu::RenderPipeline; 3] {
+    // The cross-section is cut stone, so the shader needs to know which texture that is.
+    let stone = format!("const STONE_TILE: u32 = {}u;\n", Tile::Stone as u32);
+    let shader = frame_shader(device, "chunk", &[&stone, include_str!("shader.wgsl")].concat());
+    let bind_groups = [Some(frame_layout), Some(texture_layout)];
+    [
+        ("chunk", Layer::Opaque, "fs_main"),
+        ("chunk cutaway", Layer::Cutaway, "fs_cutaway"),
+        ("water", Layer::Translucent, "fs_water"),
+    ]
+    .map(|(label, layer, fragment)| scene_pipeline(device, label, &shader, &bind_groups, &CHUNK_VERTEX_LAYOUTS, layer, fragment))
+}
+
 /// How a scene pipeline treats depth, blending and back faces.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Layer {
     /// Depth tested and written, back faces culled.
     Opaque,
+    /// Depth tested and written, and seen from both sides, so the backs of faces show where the
+    /// view starts inside something solid.
+    Cutaway,
     /// Drawn first and never written to depth, so the world always covers it.
     Background,
     /// Depth tested but not written, blended over the scene colour and seen from both sides, and
@@ -376,7 +423,7 @@ fn frame_shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderM
 }
 
 /// A pipeline drawing into the scene's colour targets with the shared depth buffer, using the
-/// shader's `vs_main` and `fs_main`.
+/// shader's `vs_main` and the fragment entry point `fragment`.
 fn scene_pipeline(
     device: &wgpu::Device,
     label: &str,
@@ -384,6 +431,7 @@ fn scene_pipeline(
     bind_group_layouts: &[Option<&wgpu::BindGroupLayout>],
     vertex_buffers: &[Option<wgpu::VertexBufferLayout>],
     layer: Layer,
+    fragment: &str,
 ) -> wgpu::RenderPipeline {
     let targets = if layer == Layer::Translucent {
         let [scene, emissive] = SCENE_TARGETS;
@@ -415,12 +463,12 @@ fn scene_pipeline(
             buffers: vertex_buffers,
         },
         primitive: wgpu::PrimitiveState {
-            cull_mode: (layer != Layer::Translucent).then_some(wgpu::Face::Back),
+            cull_mode: matches!(layer, Layer::Opaque | Layer::Background).then_some(wgpu::Face::Back),
             ..Default::default()
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled: Some(layer == Layer::Opaque),
+            depth_write_enabled: Some(matches!(layer, Layer::Opaque | Layer::Cutaway)),
             depth_compare: Some(if layer == Layer::Background {
                 wgpu::CompareFunction::Always
             } else {
@@ -432,7 +480,7 @@ fn scene_pipeline(
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_main"),
+            entry_point: Some(fragment),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &targets,
         }),

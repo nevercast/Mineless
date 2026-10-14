@@ -1,7 +1,7 @@
 mod chunk;
 pub mod terrain;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 
 use glam::{IVec2, IVec3, Vec3Swizzles};
@@ -67,14 +67,19 @@ impl Extent {
 /// All loaded chunks, keyed by chunk coordinate (world block position divided by `CHUNK_SIZE`).
 #[derive(Default)]
 pub struct World {
-    chunks: HashMap<IVec3, Chunk, BuildHasherDefault<ChunkHasher>>,
+    chunks: ChunkMap<Chunk>,
 }
+
+/// A map keyed by chunk coordinate, hashed cheaply.
+pub type ChunkMap<V> = HashMap<IVec3, V, BuildHasherDefault<ChunkHasher>>;
+/// A set of chunk coordinates, hashed cheaply.
+pub type ChunkSet = HashSet<IVec3, BuildHasherDefault<ChunkHasher>>;
 
 /// Hashes chunk coordinates with a rotate, xor and multiply per coordinate, as rustc's own hasher
 /// does. Every block read finds its chunk through the map, and the default SipHash, built to
 /// resist crafted keys, cost more than the rest of the read.
 #[derive(Default)]
-struct ChunkHasher(u64);
+pub struct ChunkHasher(u64);
 
 impl Hasher for ChunkHasher {
     fn finish(&self) -> u64 {
