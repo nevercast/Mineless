@@ -5,14 +5,22 @@
 //! made of: sandy and gravelly coasts and sea floors, grass, bare rock on cliffs and snow on cold
 //! high ground.
 
+use std::num::NonZeroUsize;
+use std::panic::resume_unwind;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
 
-use glam::{IVec3, Vec2, Vec3};
+use glam::{IVec2, IVec3, Vec2, Vec3, Vec3Swizzles};
 
+mod noise;
+mod sea;
 mod trees;
 
 use super::chunk::Chunk;
 use super::{Block, CHUNK_SIZE, Extent, SIZE, World};
+use noise::{NOISE_BOUND, fractal, gradient_2d, gradient_3d, lerp, smoothstep};
+use sea::SeaFill;
 
 /// The height the terrain is shaped for. The world may be taller, leaving air above it.
 pub const HEIGHT: i32 = 128;
@@ -47,9 +55,6 @@ const DETAIL_SCALE: Vec3 = Vec3::new(48.0, 24.0, 48.0);
 /// uplands rise over a few tens of blocks.
 const RELIEF_START: f32 = 0.06;
 const RELIEF_FULL: f32 = 0.18;
-
-/// No gradient noise sample, or fractal sum of them, is further than this from 0.
-const NOISE_BOUND: f32 = 1.1;
 
 /// Rows at the bottom that are always solid, so nothing falls out of the world.
 const BEDROCK_ROWS: i32 = 4;
@@ -132,28 +137,27 @@ pub enum Stage {
 pub struct Generation {
     seed: u32,
     extent: Extent,
-    chunks: Vec<IVec3>,
+    columns: Vec<IVec2>,
     generated: usize,
+    chunks: Vec<IVec3>,
     sea: SeaFill,
 }
 
 impl Generation {
     pub fn new(extent: Extent, seed: u32) -> Self {
-        assert!(
-            extent.height >= HEIGHT,
-            "the world must be at least as tall as the terrain"
-        );
+        assert!(extent.height >= HEIGHT, "the world must be at least as tall as the terrain");
         Self {
             seed,
             extent,
-            chunks: extent.chunk_positions().collect(),
+            columns: extent.chunk_columns().collect(),
             generated: 0,
+            chunks: extent.chunk_positions().collect(),
             sea: SeaFill::new(extent),
         }
     }
 
     pub fn stage(&self) -> Stage {
-        if self.generated < self.chunks.len() {
+        if self.generated < self.columns.len() {
             Stage::Chunks
         } else if !self.sea.done(&self.chunks) {
             Stage::Sea
@@ -165,7 +169,7 @@ impl Generation {
     /// The fraction of the current stage's work done, in `0..=1`.
     pub fn progress(&self) -> f32 {
         match self.stage() {
-            Stage::Chunks => self.generated as f32 / self.chunks.len() as f32,
+            Stage::Chunks => self.generated as f32 / self.columns.len() as f32,
             Stage::Sea => self.sea.progress(&self.chunks),
             Stage::Done => 1.0,
         }
@@ -178,9 +182,11 @@ impl Generation {
         loop {
             match self.stage() {
                 Stage::Chunks => {
-                    let position = self.chunks[self.generated];
-                    world.insert(position, generate_chunk(self.seed, position, self.extent));
-                    self.generated += 1;
+                    for (column, chunks) in self.generate_columns(start, budget) {
+                        for (y, chunk) in self.extent.chunk_levels().zip(chunks) {
+                            world.insert(IVec3::new(column.x, y, column.y), chunk);
+                        }
+                    }
                 }
                 Stage::Sea => self.sea.work(world, &self.chunks),
                 Stage::Done => return,
@@ -190,153 +196,93 @@ impl Generation {
             }
         }
     }
-}
 
-/// Floods the sea: air below `SEA_LEVEL` becomes water where it connects, through air below
-/// sea level, to the open surface of the sea. Sealed hollows stay dry. Reachability doesn't
-/// depend on the order cells are visited, so the result is the same however it is sliced.
-struct SeaFill {
-    min: IVec3,
-    /// Sea-level cells inside the world, the ones that can be open sea.
-    size: IVec3,
-    height: i32,
-    /// Columns checked for open sea so far.
-    columns: usize,
-    /// Water cells whose neighbours haven't been looked at. A cell turns to water as it joins,
-    /// so the world itself records which cells have been reached.
-    frontier: Vec<IVec3>,
-    /// Chunks looked at afterwards to store as one block if the water filled them.
-    compacted: usize,
-}
-
-impl SeaFill {
-    /// Cells flooded between checks of the time budget, which would otherwise cost about as
-    /// much as the flooding.
-    const BATCH: usize = 1024;
-
-    fn new(extent: Extent) -> Self {
-        let min = extent.min();
-        Self {
-            min,
-            size: extent.max().with_y(SEA_LEVEL) - min,
-            height: extent.height,
-            columns: 0,
-            frontier: Vec::new(),
-            compacted: 0,
-        }
-    }
-
-    fn column_count(&self) -> usize {
-        (self.size.x * self.size.z) as usize
-    }
-
-    fn done(&self, chunks: &[IVec3]) -> bool {
-        self.compacted == chunks.len()
-    }
-
-    fn progress(&self, chunks: &[IVec3]) -> f32 {
-        (self.columns + self.compacted) as f32 / (self.column_count() + chunks.len()) as f32
-    }
-
-    fn work(&mut self, world: &mut World, chunks: &[IVec3]) {
-        for _ in 0..Self::BATCH {
-            if let Some(position) = self.frontier.pop() {
-                for step in [
-                    IVec3::X,
-                    IVec3::NEG_X,
-                    IVec3::Y,
-                    IVec3::NEG_Y,
-                    IVec3::Z,
-                    IVec3::NEG_Z,
-                ] {
-                    self.flood(world, position + step);
-                }
-            } else if self.columns < self.column_count() {
-                let column = self.columns as i32;
-                let (x, z) = (column / self.size.z, column % self.size.z);
-                let surface = self.min + IVec3::new(x, SEA_LEVEL - 1, z);
-                self.columns += 1;
-                if self.open_to_sky(world, surface) {
-                    self.flood(world, surface);
-                }
-            } else if let Some(&position) = chunks.get(self.compacted) {
-                self.compacted += 1;
-                if position.y * SIZE < SEA_LEVEL
-                    && let Some(chunk) = world.chunks.get_mut(&position)
-                {
-                    chunk.compact();
-                }
-            } else {
-                return;
-            }
-        }
-    }
-
-    fn flood(&mut self, world: &mut World, position: IVec3) {
-        let local = position - self.min;
-        let inside = local.cmpge(IVec3::ZERO).all() && local.cmplt(self.size).all();
-        if inside && world.block(position) == Block::Air {
-            world.set_block(position, Block::Water);
-            self.frontier.push(position);
-        }
-    }
-
-    /// Whether nothing but air lies from `position` to the top of the world. Whole chunks of air
-    /// are skipped, since most of the sky is stored that way.
-    fn open_to_sky(&self, world: &World, mut position: IVec3) -> bool {
-        while position.y < self.height {
-            let chunk = position.div_euclid(IVec3::splat(SIZE));
-            if world.uniform_chunk(chunk) == Some(Block::Air) {
-                position.y = (chunk.y + 1) * SIZE;
-            } else if world.block(position) == Block::Air {
-                position.y += 1;
-            } else {
-                return false;
-            }
-        }
-        true
+    /// Generates the next columns on a worker per core until `budget` has passed since `start`,
+    /// at least one column each. Columns don't depend on each other, so the workers share
+    /// nothing but the count of columns taken.
+    fn generate_columns(&mut self, start: Instant, budget: Duration) -> Vec<(IVec2, Vec<Chunk>)> {
+        let (seed, extent, columns) = (self.seed, self.extent, &self.columns);
+        let next = AtomicUsize::new(self.generated);
+        let generated = thread::scope(|scope| {
+            let workers: Vec<_> = (0..workers())
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut generated = Vec::new();
+                        while let Some(&column) = columns.get(next.fetch_add(1, Ordering::Relaxed)) {
+                            generated.push((column, generate_column(seed, column, extent)));
+                            if start.elapsed() >= budget {
+                                break;
+                            }
+                        }
+                        generated
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().unwrap_or_else(|panic| resume_unwind(panic)))
+                .collect()
+        });
+        // Every column taken was generated, and they were taken in order.
+        self.generated = next.into_inner().min(self.columns.len());
+        generated
     }
 }
 
-/// The chunk at `position` in a world reaching over `extent`, from nothing but the seed and
-/// those two, so chunks come out the same whatever order they are generated in.
-fn generate_chunk(seed: u32, position: IVec3, extent: Extent) -> Chunk {
-    let mut chunk = Chunk::empty();
-    let origin = position * SIZE;
-    // Nothing of the terrain reaches its own height, so chunks above it skip shaping it.
-    let columns = (origin.y < HEIGHT).then(|| Neighbourhood::around(seed, origin));
-    for local_x in 0..CHUNK_SIZE {
-        for local_z in 0..CHUNK_SIZE {
-            let (x, z) = (origin.x + local_x as i32, origin.z + local_z as i32);
-            if !extent.contains_column(x, z) {
-                continue;
-            }
-            let on_edge = extent.on_edge(x, z);
-            let terrain = columns
-                .as_ref()
-                .filter(|_| !on_edge)
-                .map(|columns| (Surface::at(seed, x, z, columns), columns.column(x, z)));
-            for local_y in 0..CHUNK_SIZE {
-                let y = origin.y + local_y as i32;
-                let block = match &terrain {
-                    _ if on_edge => Block::WorldBorder,
-                    Some((surface, column)) => surface.block(column, y),
-                    None => Block::Air,
-                };
-                if block != Block::Air {
-                    chunk.set(local_x, local_y, local_z, block);
-                }
-            }
-        }
-    }
-    if let Some(columns) = &columns {
-        trees::grow(seed, &mut chunk, origin, columns, extent);
-    }
-    chunk.compact();
-    chunk
+/// How many threads generate columns: one per core.
+fn workers() -> usize {
+    thread::available_parallelism().map_or(1, NonZeroUsize::get)
 }
 
-/// The columns of one chunk and a border round it, with their tops, since the cliff test and
+/// The chunks of the column at chunk coordinate `column`, bottom to top, in a world reaching
+/// over `extent`. They come from nothing but the seed and those two, so columns come out the same
+/// whatever order they are generated in. The terrain of the column's blocks is worked out once
+/// and shared by every chunk in it.
+fn generate_column(seed: u32, column: IVec2, extent: Extent) -> Vec<Chunk> {
+    let origin = IVec3::new(column.x, 0, column.y) * SIZE;
+    let columns = Neighbourhood::around(seed, origin);
+    let blocks: Vec<[Block; HEIGHT as usize]> = (0..SIZE)
+        .flat_map(|i| (0..SIZE).map(move |k| (origin.x + i, origin.z + k)))
+        .map(|(x, z)| Surface::at(seed, x, z, &columns).blocks(columns.column(x, z)))
+        .collect();
+    let trees = trees::reaching(seed, origin, &columns, extent);
+    extent
+        .chunk_levels()
+        .map(|level| {
+            let origin = origin.with_y(level * SIZE);
+            let mut chunk = Chunk::empty();
+            for local_x in 0..CHUNK_SIZE {
+                for local_z in 0..CHUNK_SIZE {
+                    let (x, z) = (origin.x + local_x as i32, origin.z + local_z as i32);
+                    let on_edge = extent.on_edge(x, z);
+                    // Nothing of the terrain reaches its own height, so chunks above it skip
+                    // shaping it.
+                    if !extent.contains_column(x, z) || (!on_edge && origin.y >= HEIGHT) {
+                        continue;
+                    }
+                    let column = &blocks[local_x * CHUNK_SIZE + local_z];
+                    for local_y in 0..CHUNK_SIZE {
+                        let block = if on_edge {
+                            Block::WorldBorder
+                        } else {
+                            column[origin.y as usize + local_y]
+                        };
+                        if block != Block::Air {
+                            chunk.set(local_x, local_y, local_z, block);
+                        }
+                    }
+                }
+            }
+            if origin.y < HEIGHT {
+                trees::plant(&mut chunk, origin, &trees);
+            }
+            chunk.compact();
+            chunk
+        })
+        .collect()
+}
+
+/// The block columns of one chunk column and a border round it, with their tops, since the cliff test and
 /// trees look at neighbouring columns.
 struct Neighbourhood {
     /// World position of the first column.
@@ -356,11 +302,7 @@ impl Neighbourhood {
             .map(|(i, k)| lattice.column(origin.x + i, origin.z + k))
             .collect();
         let tops = columns.iter().map(Column::top).collect();
-        Self {
-            origin,
-            columns,
-            tops,
-        }
+        Self { origin, columns, tops }
     }
 
     fn index(&self, x: i32, z: i32) -> usize {
@@ -442,14 +384,9 @@ impl Surface {
         let top = columns.top(x, z);
         let (temperature, humidity) = climate(seed, x, z);
         let point = Vec2::new(x as f32, z as f32);
-        let noise = |salt: u32, scale: f32| {
-            fractal(2, |frequency, octave| {
-                gradient_2d(seed ^ salt ^ octave, point * frequency / scale)
-            })
-        };
+        let noise = |salt: u32, scale: f32| fractal(2, |frequency, octave| gradient_2d(seed ^ salt ^ octave, point * frequency / scale));
         let (shallowest, deepest) = (*RUN_DEPTHS.start(), *RUN_DEPTHS.end());
-        let run = shallowest
-            + ((noise(RUN_SALT, RUN_SCALE) + 0.5) * (deepest - shallowest) as f32).round() as i32;
+        let run = shallowest + ((noise(RUN_SALT, RUN_SCALE) + 0.5) * (deepest - shallowest) as f32).round() as i32;
         let seabed = match noise(SEABED_SALT, SEABED_SCALE) {
             n if n > SEABED_PATCH => Block::Gravel,
             n if n < -SEABED_PATCH => Block::Dirt,
@@ -484,6 +421,27 @@ impl Surface {
         if depth == 0 { top } else { beneath }
     }
 
+    /// Every block of the column from the bottom of the world to the terrain height, as `block`
+    /// gives them. Walking down from the top tracks each run's exposed top as it goes, rather than
+    /// looking up for it from every cell.
+    fn blocks(&self, column: &Column) -> [Block; HEIGHT as usize] {
+        let mut blocks = [Block::Air; HEIGHT as usize];
+        let mut exposed_top = None;
+        for (y, block) in (0..HEIGHT).zip(&mut blocks).rev() {
+            if !column.solid(y) {
+                exposed_top = None;
+                continue;
+            }
+            let top = *exposed_top.get_or_insert(y);
+            *block = match top - y {
+                0 => self.run_blocks(top).0,
+                depth if depth < self.run => self.run_blocks(top).1,
+                _ => Block::Stone,
+            };
+        }
+        blocks
+    }
+
     /// The top block and the blocks beneath it for a surface whose exposed top is at `y`.
     fn run_blocks(&self, y: i32) -> (Block, Block) {
         // Cliffs are judged against neighbouring column tops, so only the column top can be one.
@@ -492,19 +450,11 @@ impl Surface {
             return (Block::Snow, if cliff { Block::Stone } else { Block::Dirt });
         }
         if y < SEA_LEVEL - 1 {
-            let floor = if y >= SEA_LEVEL - 1 - SHALLOWS {
-                Block::Sand
-            } else {
-                self.seabed
-            };
+            let floor = if y >= SEA_LEVEL - 1 - SHALLOWS { Block::Sand } else { self.seabed };
             return (floor, floor);
         }
         if self.biome == Biome::Beach && y <= SEA_LEVEL + 2 {
-            let shore = if self.shingle {
-                Block::Gravel
-            } else {
-                Block::Sand
-            };
+            let shore = if self.shingle { Block::Gravel } else { Block::Sand };
             return (shore, shore);
         }
         if cliff || (self.biome == Biome::Hills && y >= HIGH_ROCK_LINE && self.high_rock) {
@@ -559,14 +509,12 @@ impl Lattice {
 
     /// The density profile of one column, interpolated from the four lattice columns around it.
     fn column(&self, x: i32, z: i32) -> Column {
-        let local = Vec2::new((x - self.origin.x) as f32, (z - self.origin.z) as f32)
-            / Vec2::new(LATTICE_STEP.x as f32, LATTICE_STEP.z as f32);
-        let cell = local.floor();
-        let t = local - cell;
-        let (i, k) = (cell.x as i32, cell.y as i32);
+        let local = IVec2::new(x - self.origin.x, z - self.origin.z);
+        let step = LATTICE_STEP.xz();
+        let t = local.rem_euclid(step).as_vec2() / step.as_vec2();
+        let IVec2 { x: i, y: k } = local.div_euclid(step);
         debug_assert!(i >= 0 && k >= 0 && i + 1 < self.across && k + 1 < self.across);
-        let corners = [(i, k), (i + 1, k), (i, k + 1), (i + 1, k + 1)]
-            .map(|(i, k)| (i * self.across + k) as usize);
+        let corners = [(i, k), (i + 1, k), (i, k + 1), (i + 1, k + 1)].map(|(i, k)| (i * self.across + k) as usize);
         let blend = |value: &dyn Fn(usize) -> f32| {
             let [a, b, c, d] = corners.map(value);
             lerp(lerp(a, b, t.x), lerp(c, d, t.x), t.y)
@@ -632,10 +580,7 @@ impl Fields {
         let column = Vec2::new(x as f32, z as f32);
         let elevation = ELEVATION_OFFSET
             + fractal(4, |frequency, salt| {
-                gradient_2d(
-                    seed ^ ELEVATION_SALT ^ salt,
-                    column * frequency / ELEVATION_SCALE,
-                )
+                gradient_2d(seed ^ ELEVATION_SALT ^ salt, column * frequency / ELEVATION_SCALE)
             });
         let relief = smoothstep(
             RELIEF_START,
@@ -646,12 +591,7 @@ impl Fields {
         );
         Self {
             target: SEA_LEVEL as f32
-                + elevation
-                    * if elevation < 0.0 {
-                        SEA_SPREAD
-                    } else {
-                        LOWLAND_SPREAD
-                    }
+                + elevation * if elevation < 0.0 { SEA_SPREAD } else { LOWLAND_SPREAD }
                 + COAST_RISE * smoothstep(0.0, COAST_EDGE, elevation)
                 + UPLAND_RISE * relief,
             detail: lerp(PLAINS_DETAIL, UPLAND_DETAIL, relief),
@@ -670,133 +610,14 @@ impl Fields {
             return shape.signum();
         }
         let point = Vec3::new(x as f32, y as f32, z as f32) / DETAIL_SCALE;
-        let detail = fractal(5, |frequency, salt| {
-            gradient_3d(seed ^ DETAIL_SALT ^ salt, point * frequency)
-        });
+        let detail = fractal(5, |frequency, salt| gradient_3d(seed ^ DETAIL_SALT ^ salt, point * frequency));
         (shape + self.detail * detail).clamp(-1.0, 1.0)
     }
-}
-
-/// `octaves` layers of noise, each twice as fine and half as strong as the last, scaled back to
-/// the range of one layer. `layer` gets the layer's frequency and a salt that makes the layers
-/// independent.
-fn fractal(octaves: u32, layer: impl Fn(f32, u32) -> f32) -> f32 {
-    let mut total = 0.0;
-    let mut strength = 1.0;
-    let mut strengths = 0.0;
-    let mut frequency = 1.0;
-    for octave in 0..octaves {
-        total += strength * layer(frequency, octave.wrapping_mul(0x68e3_1da4));
-        strengths += strength;
-        strength *= 0.5;
-        frequency *= 2.0;
-    }
-    total / strengths
-}
-
-/// Gradient noise in about `-1..=1`: a hashed gradient at each lattice corner, dotted with the
-/// offset to the point and blended with a smooth fade. Plain arithmetic only, so every platform
-/// generates the same world.
-fn gradient_2d(seed: u32, point: Vec2) -> f32 {
-    let cell = point.floor();
-    let (x, z) = (cell.x as i32, cell.y as i32);
-    let t = point - cell;
-    let corner = |dx: i32, dz: i32| {
-        let offset = t - Vec2::new(dx as f32, dz as f32);
-        let (gx, gz) = match hash(seed, x + dx, 0, z + dz) & 7 {
-            0 => (1.0, 1.0),
-            1 => (-1.0, 1.0),
-            2 => (1.0, -1.0),
-            3 => (-1.0, -1.0),
-            4 => (1.0, 0.0),
-            5 => (-1.0, 0.0),
-            6 => (0.0, 1.0),
-            _ => (0.0, -1.0),
-        };
-        gx * offset.x + gz * offset.y
-    };
-    let (fx, fz) = (fade(t.x), fade(t.y));
-    lerp(
-        lerp(corner(0, 0), corner(1, 0), fx),
-        lerp(corner(0, 1), corner(1, 1), fx),
-        fz,
-    )
-}
-
-/// 3D gradient noise in about `-1..=1`, with gradients towards the twelve edges of a cube.
-fn gradient_3d(seed: u32, point: Vec3) -> f32 {
-    let cell = point.floor();
-    let base = cell.as_ivec3();
-    let t = point - cell;
-    let corner = |d: IVec3| {
-        let o = t - d.as_vec3();
-        let p = base + d;
-        match hash(seed, p.x, p.y, p.z) % 12 {
-            0 => o.x + o.y,
-            1 => -o.x + o.y,
-            2 => o.x - o.y,
-            3 => -o.x - o.y,
-            4 => o.x + o.z,
-            5 => -o.x + o.z,
-            6 => o.x - o.z,
-            7 => -o.x - o.z,
-            8 => o.y + o.z,
-            9 => -o.y + o.z,
-            10 => o.y - o.z,
-            _ => -o.y - o.z,
-        }
-    };
-    let f = Vec3::new(fade(t.x), fade(t.y), fade(t.z));
-    let plane = |z: i32| {
-        lerp(
-            lerp(
-                corner(IVec3::new(0, 0, z)),
-                corner(IVec3::new(1, 0, z)),
-                f.x,
-            ),
-            lerp(
-                corner(IVec3::new(0, 1, z)),
-                corner(IVec3::new(1, 1, z)),
-                f.x,
-            ),
-            f.y,
-        )
-    };
-    lerp(plane(0), plane(1), f.z)
-}
-
-/// An integer hash of a lattice point, so every platform agrees.
-fn hash(seed: u32, x: i32, y: i32, z: i32) -> u32 {
-    let mut hash = seed
-        ^ (x as u32).wrapping_mul(0x27d4_eb2d)
-        ^ (y as u32).wrapping_mul(0x9e37_79b1).rotate_left(8)
-        ^ (z as u32).wrapping_mul(0x1656_67b1).rotate_left(16);
-    hash ^= hash >> 15;
-    hash = hash.wrapping_mul(0x2c1b_3c6d);
-    hash ^= hash >> 12;
-    hash = hash.wrapping_mul(0x297a_2d39);
-    hash ^= hash >> 15;
-    hash
-}
-
-/// Eases lattice blending so the noise has no visible creases at cell edges.
-fn fade(t: f32) -> f32 {
-    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
-}
-
-fn lerp(from: f32, to: f32, t: f32) -> f32 {
-    from + (to - from) * t
-}
-
-fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
-    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::IVec2;
 
     /// Small enough to generate quickly, taller than the terrain, and not a whole number of
     /// chunks across, so the border stands partway into the outermost chunks.
@@ -826,40 +647,40 @@ mod tests {
         columns(seed).iter().map(Column::top).collect()
     }
 
+    /// Generates each column on its own into `world`.
+    fn insert_columns(world: &mut World, seed: u32, extent: Extent, columns: impl Iterator<Item = IVec2>) {
+        for column in columns {
+            for (y, chunk) in extent.chunk_levels().zip(generate_column(seed, column, extent)) {
+                world.insert(IVec3::new(column.x, y, column.y), chunk);
+            }
+        }
+    }
+
+    /// The chunk at `position`, cut from its column generated on its own.
+    fn generate_chunk(seed: u32, position: IVec3, extent: Extent) -> Chunk {
+        generate_column(seed, position.xz(), extent).swap_remove(position.y as usize)
+    }
+
     #[test]
     fn generation_order_does_not_change_the_world() {
-        let positions: Vec<IVec3> = EXTENT.chunk_positions().collect();
-        assert!(
-            positions
-                .iter()
-                .any(|position| position.cmplt(IVec3::ZERO).any())
-        );
+        let columns: Vec<IVec2> = EXTENT.chunk_columns().collect();
+        assert!(columns.iter().any(|column| column.cmplt(IVec2::ZERO).any()));
         let mut in_order = World::default();
-        for &position in &positions {
-            in_order.insert(position, generate_chunk(5, position, EXTENT));
-        }
+        insert_columns(&mut in_order, 5, EXTENT, columns.iter().copied());
         let mut reversed = World::default();
-        for &position in positions.iter().rev() {
-            reversed.insert(position, generate_chunk(5, position, EXTENT));
-        }
-        for position in positions {
-            assert!(
-                in_order.chunks[&position] == reversed.chunks[&position],
-                "{position}"
-            );
+        insert_columns(&mut reversed, 5, EXTENT, columns.iter().rev().copied());
+        for position in EXTENT.chunk_positions() {
+            assert!(in_order.chunks[&position] == reversed.chunks[&position], "{position}");
         }
     }
 
     #[test]
-    fn a_chunk_generated_alone_matches_the_whole_world() {
+    fn a_column_generated_alone_matches_the_whole_world() {
         let world = generate(EXTENT, 5);
         let border = IVec3::new(-2, 1, 0);
         let interior = IVec3::new(-1, 2, 0);
         for position in [border, interior] {
-            assert!(
-                generate_chunk(5, position, EXTENT) == world.chunks[&position],
-                "{position}"
-            );
+            assert!(generate_chunk(5, position, EXTENT) == world.chunks[&position], "{position}");
         }
         assert_eq!(world.block(IVec3::new(-24, 20, 5)), Block::WorldBorder);
     }
@@ -888,7 +709,8 @@ mod tests {
         let mut world = World::default();
         let mut generation = Generation::new(EXTENT, 5);
         generation.work(&mut world, Duration::ZERO);
-        assert_eq!(world.chunks.len(), 1);
+        let first_slice = world.chunks.len() / EXTENT.chunk_levels().count();
+        assert!((1..=workers()).contains(&first_slice), "{first_slice}");
         let mut slices = 1;
         let mut seen_sea = false;
         while generation.stage() != Stage::Done {
@@ -898,7 +720,7 @@ mod tests {
             generation.work(&mut world, Duration::ZERO);
             slices += 1;
         }
-        assert!(seen_sea && slices > EXTENT.chunk_positions().count() + 1);
+        assert!(seen_sea && slices > EXTENT.chunk_columns().count() / workers() + 1);
         assert_eq!(world.chunks.len(), whole.chunks.len());
         for (position, chunk) in &whole.chunks {
             assert!(world.chunks[position] == *chunk, "{position}");
@@ -910,8 +732,7 @@ mod tests {
         let world = generate(EXTENT, 5);
         for x in (-23..23).step_by(3) {
             for z in (-23..23).step_by(5) {
-                let lattice =
-                    Lattice::around(5, IVec3::new(x, 0, z).div_euclid(IVec3::splat(SIZE)) * SIZE);
+                let lattice = Lattice::around(5, IVec3::new(x, 0, z).div_euclid(IVec3::splat(SIZE)) * SIZE);
                 let top = lattice.column(x, z).top();
                 if (top..HEIGHT).any(|y| is_tree(world.block(IVec3::new(x, y, z)))) {
                     continue;
@@ -940,9 +761,7 @@ mod tests {
     #[test]
     fn mostly_lowland_with_some_sea_and_some_uplands() {
         let tops: Vec<i32> = (0..4).flat_map(tops).collect();
-        let share = |test: &dyn Fn(i32) -> bool| {
-            tops.iter().filter(|&&top| test(top)).count() as f32 / tops.len() as f32
-        };
+        let share = |test: &dyn Fn(i32) -> bool| tops.iter().filter(|&&top| test(top)).count() as f32 / tops.len() as f32;
         let below_sea = share(&|top| top < SEA_LEVEL);
         let lowland = share(&|top| (SEA_LEVEL + 1..=SEA_LEVEL + 12).contains(&top));
         assert!((0.1..=0.4).contains(&below_sea), "{below_sea}");
@@ -974,11 +793,7 @@ mod tests {
             for x in 0..255 {
                 for z in 0..256 {
                     let step = (top(x + 1, z) - top(x, z)).abs();
-                    let tally = if (x + 1) % SIZE == 0 {
-                        &mut border
-                    } else {
-                        &mut inside
-                    };
+                    let tally = if (x + 1) % SIZE == 0 { &mut border } else { &mut inside };
                     tally.0 += step;
                     tally.1 += 1;
                 }
@@ -986,10 +801,7 @@ mod tests {
         }
         let mean = |(sum, count): (i32, i32)| sum as f32 / count as f32;
         let (border, inside) = (mean(border), mean(inside));
-        assert!(
-            (border - inside).abs() <= inside * 0.25,
-            "{border} vs {inside}"
-        );
+        assert!((border - inside).abs() <= inside * 0.25, "{border} vs {inside}");
     }
 
     /// Dressed blocks of a 96x96 area in the middle of the full world, clear of the border, for
@@ -1000,14 +812,8 @@ mod tests {
             (0..4)
                 .map(|seed| {
                     let mut world = World::default();
-                    for cx in -3..3 {
-                        for cy in 0..HEIGHT / SIZE {
-                            for cz in -3..3 {
-                                let position = IVec3::new(cx, cy, cz);
-                                world.insert(position, generate_chunk(seed, position, FULL_WORLD));
-                            }
-                        }
-                    }
+                    let columns = (-3..3).flat_map(|x| (-3..3).map(move |z| IVec2::new(x, z)));
+                    insert_columns(&mut world, seed, FULL_WORLD, columns);
                     world
                 })
                 .collect()
@@ -1055,6 +861,22 @@ mod tests {
                         Biome::Beach => assert!((SEA_LEVEL - 1..=SEA_LEVEL + 2).contains(&top)),
                         _ => assert!(top >= SEA_LEVEL - 1),
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_whole_column_of_blocks_matches_each_block_alone() {
+        for seed in 0..4 {
+            let origin = IVec3::new(-16, 0, 32);
+            let columns = Neighbourhood::around(seed, origin);
+            for (x, z) in (-16..0).flat_map(|x| (32..48).map(move |z| (x, z))) {
+                let surface = Surface::at(seed, x, z, &columns);
+                let column = columns.column(x, z);
+                let blocks = surface.blocks(column);
+                for y in 0..HEIGHT {
+                    assert_eq!(blocks[y as usize], surface.block(column, y), "{x}, {y}, {z}");
                 }
             }
         }
@@ -1167,14 +989,7 @@ mod tests {
                 found.push(block);
             }
         }
-        for block in [
-            Block::Grass,
-            Block::Dirt,
-            Block::Stone,
-            Block::Sand,
-            Block::Gravel,
-            Block::Snow,
-        ] {
+        for block in [Block::Grass, Block::Dirt, Block::Stone, Block::Sand, Block::Gravel, Block::Snow] {
             assert!(found.contains(&block), "{block:?}");
         }
     }
@@ -1195,101 +1010,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn sea_fills_open_water_and_what_connects_to_it() {
-        let extent = Extent {
-            half_width: 16,
-            height: 4 * SIZE,
-        };
-        let mut world = World::default();
-        for position in extent.chunk_positions() {
-            world.insert(position, Chunk::empty());
-        }
-        let solid_below = SEA_LEVEL + 3;
-        for x in -16..16 {
-            for z in -16..16 {
-                for y in 0..solid_below {
-                    world.set_block(IVec3::new(x, y, z), Block::Stone);
-                }
-            }
-        }
-        let mut dig = |from: IVec3, to: IVec3| {
-            for x in from.x..=to.x {
-                for y in from.y..=to.y {
-                    for z in from.z..=to.z {
-                        world.set_block(IVec3::new(x, y, z), Block::Air);
-                    }
-                }
-            }
-        };
-        // An open basin, a hollow reaching x = 0 joined to it by a one-block tunnel, and a sealed
-        // hollow.
-        dig(
-            IVec3::new(-12, 30, -12),
-            IVec3::new(-7, solid_below - 1, -7),
-        );
-        dig(IVec3::new(-6, 32, -10), IVec3::new(-3, 32, -10));
-        dig(IVec3::new(-2, 30, -12), IVec3::new(0, 33, -8));
-        dig(IVec3::new(6, 30, 6), IVec3::new(9, 33, 9));
-        let chunks: Vec<IVec3> = extent.chunk_positions().collect();
-        let mut sea = SeaFill::new(extent);
-        while !sea.done(&chunks) {
-            sea.work(&mut world, &chunks);
-        }
-
-        let at = |x, y, z| world.block(IVec3::new(x, y, z));
-        for y in 30..solid_below {
-            let expected = if y < SEA_LEVEL {
-                Block::Water
-            } else {
-                Block::Air
-            };
-            assert_eq!(at(-10, y, -10), expected, "basin at {y}");
-        }
-        assert_eq!(at(-4, 32, -10), Block::Water);
-        assert_eq!(at(0, 30, -11), Block::Water);
-        assert_eq!(at(7, 31, 7), Block::Air);
-    }
-
-    #[test]
-    fn generated_sea_is_flooded_and_sealed_off() {
-        let extent = Extent {
-            half_width: 48,
-            height: HEIGHT,
-        };
-        let world = generate(extent, 6);
-        let (min, max) = (extent.min(), extent.max());
-        let mut water = 0;
-        for x in min.x..max.x {
-            for z in min.z..max.z {
-                for y in 0..HEIGHT {
-                    let position = IVec3::new(x, y, z);
-                    if world.block(position) != Block::Water {
-                        continue;
-                    }
-                    water += 1;
-                    assert!(y < SEA_LEVEL, "water at {position}");
-                    for step in [
-                        IVec3::X,
-                        IVec3::NEG_X,
-                        IVec3::Y,
-                        IVec3::NEG_Y,
-                        IVec3::Z,
-                        IVec3::NEG_Z,
-                    ] {
-                        let next = position + step;
-                        let open = next.y < SEA_LEVEL && world.block(next) == Block::Air;
-                        assert!(
-                            !open || !extent.contains(next),
-                            "air beside water at {next}"
-                        );
-                    }
-                }
-            }
-        }
-        assert!(water > 0);
     }
 
     /// The surfaces of every column in the chunk columns from `first` to `last`, inclusive.
@@ -1323,11 +1043,7 @@ mod tests {
         const BEACH_AND_FLOATING: u32 = 108;
 
         let share = |found: &[(Surface, Column)], biome: Biome| {
-            found
-                .iter()
-                .filter(|(surface, _)| surface.biome == biome)
-                .count() as f32
-                / found.len() as f32
+            found.iter().filter(|(surface, _)| surface.biome == biome).count() as f32 / found.len() as f32
         };
 
         let hills = surfaces(EXTREME_HILLS, IVec2::new(1, 1), IVec2::new(8, 8));
@@ -1344,10 +1060,7 @@ mod tests {
         let coast = surfaces(BEACH_AND_FLOATING, IVec2::new(-9, -8), IVec2::new(2, -3));
         let sand = coast
             .iter()
-            .filter(|(surface, column)| {
-                surface.biome == Biome::Beach
-                    && surface.block(column, surface.top - 1) == Block::Sand
-            })
+            .filter(|(surface, column)| surface.biome == Biome::Beach && surface.block(column, surface.top - 1) == Block::Sand)
             .count();
         assert!(sand > 1000, "{sand}");
 
@@ -1356,15 +1069,8 @@ mod tests {
         // canopy can touch it without holding it up.
         let mut world = World::default();
         let (low, high) = (IVec3::new(4, 4, 2), IVec3::new(5, 5, 4));
-        for cx in low.x..=high.x {
-            for cy in low.y..=high.y {
-                for cz in low.z..=high.z {
-                    let position = IVec3::new(cx, cy, cz);
-                    let chunk = generate_chunk(BEACH_AND_FLOATING, position, FULL_WORLD);
-                    world.insert(position, chunk);
-                }
-            }
-        }
+        let columns = (low.x..=high.x).flat_map(|x| (low.z..=high.z).map(move |z| IVec2::new(x, z)));
+        insert_columns(&mut world, BEACH_AND_FLOATING, FULL_WORLD, columns);
         let (min, max) = (low * SIZE, (high + 1) * SIZE - 1);
         let ground = |position: IVec3| {
             let block = world.block(position);
@@ -1379,29 +1085,11 @@ mod tests {
                 position.cmpgt(min).all() && position.cmplt(max).all(),
                 "the lump reaches {position}"
             );
-            for step in [
-                IVec3::X,
-                IVec3::NEG_X,
-                IVec3::Y,
-                IVec3::NEG_Y,
-                IVec3::Z,
-                IVec3::NEG_Z,
-            ] {
+            for step in [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z] {
                 let next = position + step;
                 if ground(next) && reached.insert(next) {
                     frontier.push(next);
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn noise_stays_near_unit_range() {
-        for x in -40..40 {
-            for z in -40..40 {
-                let point = Vec2::new(x as f32, z as f32) * 0.37;
-                assert!(gradient_2d(3, point).abs() <= NOISE_BOUND);
-                assert!(gradient_3d(3, point.extend(z as f32 * 0.21)).abs() <= NOISE_BOUND);
             }
         }
     }

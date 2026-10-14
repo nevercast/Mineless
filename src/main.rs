@@ -84,8 +84,7 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let attributes =
-            Window::default_attributes().with_title(format!("Mineless | seed {}", self.seed));
+        let attributes = Window::default_attributes().with_title(format!("Mineless | seed {}", self.seed));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         let renderer = pollster::block_on(Renderer::new(window.clone(), WORLD));
         self.renderer = Some(renderer);
@@ -118,21 +117,13 @@ impl ApplicationHandler for App {
                 let loading = self.loading.as_mut().expect("checked by the match guard");
                 if loading.work(&mut self.world, &mut self.meshed, renderer, LOADING_SLICE) {
                     self.loading = None;
-                    eprintln!(
-                        "Playable after {:.2} s",
-                        self.launched.elapsed().as_secs_f32()
-                    );
+                    eprintln!("Playable after {:.2} s", self.launched.elapsed().as_secs_f32());
                     self.players = test_players(&self.world);
-                    let ground = self
-                        .world
-                        .column_top(START_POSITION.x as i32, START_POSITION.z as i32);
+                    let ground = self.world.column_top(START_POSITION.x as i32, START_POSITION.z as i32);
                     self.camera = start_camera(ground);
                     self.last_frame = Instant::now();
                     window.set_title(&format!("Mineless | seed {}", self.seed));
-                } else if self
-                    .loading_drawn
-                    .is_none_or(|drawn| drawn.elapsed() >= LOADING_SCREEN_INTERVAL)
-                {
+                } else if self.loading_drawn.is_none_or(|drawn| drawn.elapsed() >= LOADING_SCREEN_INTERVAL) {
                     self.loading_drawn = Some(Instant::now());
                     let percent = (loading.progress() * 100.0).floor();
                     let detail = format!("{} {percent:.0}%", loading.phase().name());
@@ -147,8 +138,7 @@ impl ApplicationHandler for App {
                 self.last_frame = now;
                 self.spectator.update(&mut self.camera, seconds);
                 let camera = self.camera.position.xz();
-                self.meshed
-                    .update(&self.world, renderer, camera, MESHING_SLICE);
+                self.meshed.update(&self.world, renderer, camera, MESHING_SLICE);
                 // Simulate in fixed ticks; a long stall drops time rather than ticking to catch up.
                 self.unsimulated = (self.unsimulated + seconds).min(MAX_CATCH_UP);
                 while self.unsimulated >= 1.0 / TICK_RATE {
@@ -235,12 +225,9 @@ fn parse_seed(mut args: impl Iterator<Item = String>) -> Result<u32, String> {
             return Err(format!("unknown argument {arg:?}"));
         }
         let value = args.next().ok_or("--seed needs a value")?;
-        seed = value.parse().map_err(|_| {
-            format!(
-                "--seed {value:?} is not a whole number from 0 to {}",
-                u32::MAX
-            )
-        })?;
+        seed = value
+            .parse()
+            .map_err(|_| format!("--seed {value:?} is not a whole number from 0 to {}", u32::MAX))?;
     }
     Ok(seed)
 }
@@ -261,11 +248,7 @@ fn start_camera(ground: i32) -> Camera {
 
 /// The top of the ground at the centre of a column, where a player can stand.
 fn ground_at(world: &World, x: i32, z: i32) -> Vec3 {
-    vec3(
-        x as f32 + 0.5,
-        world.column_top(x, z) as f32,
-        z as f32 + 0.5,
-    )
+    vec3(x as f32 + 0.5, world.column_top(x, z) as f32, z as f32 + 0.5)
 }
 
 const MAX_CATCH_UP: f32 = 0.25;
@@ -434,10 +417,7 @@ mod tests {
         };
         let world = sim::world::terrain::generate(small_world, SEED);
         let mut players = test_players(&world);
-        let (low, high) = (
-            small_world.min().as_vec3() + 1.0,
-            small_world.max().as_vec3() - 1.0,
-        );
+        let (low, high) = (small_world.min().as_vec3() + 1.0, small_world.max().as_vec3() - 1.0);
         let camera = ground_at(&world, 0, 0);
         // An hour of simulation.
         for _ in 0..(3600.0 * TICK_RATE) as u32 {

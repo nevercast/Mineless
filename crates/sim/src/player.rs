@@ -55,10 +55,7 @@ impl Player {
     pub fn new(feet: Vec3, yaw: f32, skin: Skin) -> Self {
         Self {
             skin,
-            controls: Controls {
-                yaw,
-                ..Default::default()
-            },
+            controls: Controls { yaw, ..Default::default() },
             body: Body {
                 position: feet,
                 half_width: 0.3,
@@ -89,8 +86,7 @@ impl Player {
         if let Some(height) = self.controls.jump.take()
             && self.on_ground
         {
-            self.fall_velocity =
-                launch_velocity(height.clamp(*JUMP_HEIGHTS.start(), *JUMP_HEIGHTS.end()));
+            self.fall_velocity = launch_velocity(height.clamp(*JUMP_HEIGHTS.start(), *JUMP_HEIGHTS.end()));
         }
         let (sin, cos) = controls.yaw.sin_cos();
         let forward = Vec3::new(-sin, 0.0, -cos);
@@ -236,10 +232,7 @@ mod tests {
             player.tick(&world);
             let moved = player.body.position - Vec3::new(8.5, 1.0, 8.5);
             let expected = Vec3::new(walk.x, 0.0, -walk.y).clamp_length_max(1.0);
-            assert!(
-                moved.abs_diff_eq(expected * WALK_SPEED / TICK_RATE, 1e-5),
-                "{walk}"
-            );
+            assert!(moved.abs_diff_eq(expected * WALK_SPEED / TICK_RATE, 1e-5), "{walk}");
         }
     }
 

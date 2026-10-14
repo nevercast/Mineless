@@ -8,11 +8,7 @@ pub struct Skybox {
 }
 
 impl Skybox {
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        frame_layout: &wgpu::BindGroupLayout,
-    ) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, frame_layout: &wgpu::BindGroupLayout) -> Self {
         let view = load_panorama(device, queue);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("skybox"),
@@ -24,10 +20,7 @@ impl Skybox {
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("skybox"),
-            entries: &[
-                super::texture_entry(0, wgpu::TextureViewDimension::D2),
-                super::sampler_entry(1),
-            ],
+            entries: &[super::texture_entry(0, wgpu::TextureViewDimension::D2), super::sampler_entry(1)],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("skybox"),
@@ -53,10 +46,7 @@ impl Skybox {
             &[],
             super::Layer::Background,
         );
-        Self {
-            pipeline,
-            bind_group,
-        }
+        Self { pipeline, bind_group }
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass, frame: &wgpu::BindGroup) {
@@ -69,12 +59,9 @@ impl Skybox {
 
 /// Uploads the equirectangular panorama: longitude across, latitude down.
 fn load_panorama(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
-    let panorama = image::load_from_memory_with_format(
-        include_bytes!("../../textures/sky/day.png"),
-        ImageFormat::Png,
-    )
-    .expect("the skybox is a PNG embedded at build time")
-    .to_rgba8();
+    let panorama = image::load_from_memory_with_format(include_bytes!("../../textures/sky/day.png"), ImageFormat::Png)
+        .expect("the skybox is a PNG embedded at build time")
+        .to_rgba8();
     device
         .create_texture_with_data(
             queue,

@@ -30,10 +30,7 @@ pub fn part_transforms(avatar: &Avatar) -> [Mat4; PART_COUNT] {
     ];
     std::array::from_fn(|i| {
         let pivot = PARTS[i].pivot / TEXELS_PER_BLOCK;
-        model
-            * Mat4::from_translation(pivot)
-            * Mat4::from_quat(rotations[i])
-            * Mat4::from_translation(-pivot)
+        model * Mat4::from_translation(pivot) * Mat4::from_quat(rotations[i]) * Mat4::from_translation(-pivot)
     })
 }
 
@@ -119,25 +116,18 @@ pub fn build_mesh() -> (Vec<AvatarVertex>, Vec<u16>) {
     (vertices, indices)
 }
 
-fn push_box(
-    vertices: &mut Vec<AvatarVertex>,
-    indices: &mut Vec<u16>,
-    part: &Part,
-    index: u32,
-    (u, v): (f32, f32),
-    grow: Vec3,
-) {
+fn push_box(vertices: &mut Vec<AvatarVertex>, indices: &mut Vec<u16>, part: &Part, index: u32, (u, v): (f32, f32), grow: Vec3) {
     let Vec3 { x: w, y: h, z: d } = part.size;
     let centre = part.min + part.size / 2.0;
     let half = part.size / 2.0 + grow;
     // Each face: outward normal, its right and up as seen from outside, and its rect on the
     // skin (left, top, width, height).
     let faces = [
-        (Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y, (u + d, v + d, w, h)), // front
-        (Vec3::Z, Vec3::X, Vec3::Y, (u + 2.0 * d + w, v + d, w, h)), // back
-        (Vec3::X, Vec3::NEG_Z, Vec3::Y, (u, v + d, d, h)),         // right
-        (Vec3::NEG_X, Vec3::Z, Vec3::Y, (u + d + w, v + d, d, h)), // left
-        (Vec3::Y, Vec3::NEG_X, Vec3::Z, (u + d, v, w, d)),         // top
+        (Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y, (u + d, v + d, w, h)),     // front
+        (Vec3::Z, Vec3::X, Vec3::Y, (u + 2.0 * d + w, v + d, w, h)),   // back
+        (Vec3::X, Vec3::NEG_Z, Vec3::Y, (u, v + d, d, h)),             // right
+        (Vec3::NEG_X, Vec3::Z, Vec3::Y, (u + d + w, v + d, d, h)),     // left
+        (Vec3::Y, Vec3::NEG_X, Vec3::Z, (u + d, v, w, d)),             // top
         (Vec3::NEG_Y, Vec3::NEG_X, Vec3::NEG_Z, (u + d + w, v, w, d)), // bottom
     ];
     for (normal, right, up, (left, top, width, height)) in faces {
@@ -185,10 +175,7 @@ mod tests {
     fn faces_wind_counter_clockwise_from_outside() {
         let (vertices, indices) = build_mesh();
         let centres = PARTS.iter().map(|part| part.min + part.size / 2.0);
-        let triangle_centres = centres
-            .clone()
-            .chain(centres)
-            .flat_map(|centre| [centre; 12]);
+        let triangle_centres = centres.clone().chain(centres).flat_map(|centre| [centre; 12]);
         assert_eq!(triangle_centres.clone().count(), indices.len() / 3);
         for (triangle, centre) in indices.chunks(3).zip(triangle_centres) {
             let [a, b, c] = [0, 1, 2].map(|i| Vec3::from(vertices[triangle[i] as usize].position));

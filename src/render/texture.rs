@@ -113,11 +113,7 @@ fn tile_image(tile: Tile) -> RgbaImage {
         // The file is a strip of animation frames; still water uses the first.
         image = imageops::crop_imm(&image, 0, 0, TILE_SIZE, TILE_SIZE).to_image();
     }
-    assert_eq!(
-        image.dimensions(),
-        (TILE_SIZE, TILE_SIZE),
-        "{tile:?} tile size"
-    );
+    assert_eq!(image.dimensions(), (TILE_SIZE, TILE_SIZE), "{tile:?} tile size");
     match tile {
         Tile::GrassTop => tint(&mut image, GRASS_TINT),
         Tile::OakLeaves => {
@@ -151,23 +147,13 @@ fn tint(image: &mut RgbaImage, tint: [u8; 3]) {
     }
 }
 
-fn write_layer(
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    image: &RgbaImage,
-    layer: u32,
-    mip_level: u32,
-) {
+fn write_layer(queue: &wgpu::Queue, texture: &wgpu::Texture, image: &RgbaImage, layer: u32, mip_level: u32) {
     let (width, height) = image.dimensions();
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
             mip_level,
-            origin: wgpu::Origin3d {
-                x: 0,
-                y: 0,
-                z: layer,
-            },
+            origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
             aspect: wgpu::TextureAspect::All,
         },
         image,

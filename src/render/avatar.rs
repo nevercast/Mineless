@@ -7,8 +7,7 @@ use sim::avatar::Avatar;
 use super::skins::SkinTextures;
 use crate::avatar::{self, AvatarVertex, PART_COUNT};
 
-const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Uint32];
+const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Uint32];
 /// Matches `Instance` in avatar.wgsl.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -35,11 +34,7 @@ pub struct AvatarRenderer {
 }
 
 impl AvatarRenderer {
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        frame_layout: &wgpu::BindGroupLayout,
-    ) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, frame_layout: &wgpu::BindGroupLayout) -> Self {
         let (vertices, indices) = avatar::build_mesh();
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("avatar vertices"),
@@ -144,11 +139,7 @@ fn create_instance_buffer(device: &wgpu::Device, avatars: usize) -> wgpu::Buffer
     })
 }
 
-fn create_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    instances: &wgpu::Buffer,
-) -> wgpu::BindGroup {
+fn create_bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, instances: &wgpu::Buffer) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("avatar instances"),
         layout,

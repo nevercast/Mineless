@@ -61,9 +61,7 @@ impl Sky {
             light_direction,
             light_color,
             ambient: NIGHT_AMBIENT.lerp(DAY_AMBIENT, daylight),
-            horizon: NIGHT_HORIZON
-                .lerp(DAY_HORIZON, daylight)
-                .lerp(DUSK_HORIZON, dusk * 0.5),
+            horizon: NIGHT_HORIZON.lerp(DAY_HORIZON, daylight).lerp(DUSK_HORIZON, dusk * 0.5),
             skybox_tint: Vec3::ONE.lerp(DUSK_TINT, dusk),
             daylight,
         }

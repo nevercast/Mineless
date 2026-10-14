@@ -8,7 +8,7 @@ pub struct Camera {
     pub yaw: f32,
     /// Radians above the horizon.
     pub pitch: f32,
-    pub fov_y_radians: f32,
+    fov_y_radians: f32,
 }
 
 impl Camera {
@@ -22,7 +22,7 @@ impl Camera {
         }
     }
 
-    pub fn forward(&self) -> Vec3 {
+    fn forward(&self) -> Vec3 {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
         Vec3::new(-sin_yaw * cos_pitch, sin_pitch, -cos_yaw * cos_pitch)
@@ -76,15 +76,9 @@ mod tests {
         // Straddling the edge of the view.
         assert!(unit_box_at(Vec3::new(7.5, 0.0, -10.0)));
         assert!(!unit_box_at(Vec3::new(0.0, 0.0, 10.0)), "behind");
-        assert!(
-            !unit_box_at(Vec3::new(-50.0, 0.0, -10.0)),
-            "far to the left"
-        );
+        assert!(!unit_box_at(Vec3::new(-50.0, 0.0, -10.0)), "far to the left");
         assert!(!unit_box_at(Vec3::new(0.0, 50.0, -10.0)), "far above");
-        assert!(
-            !unit_box_at(Vec3::new(0.0, 0.0, -2000.0)),
-            "past the far plane"
-        );
+        assert!(!unit_box_at(Vec3::new(0.0, 0.0, -2000.0)), "past the far plane");
     }
 
     #[test]
