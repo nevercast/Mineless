@@ -41,9 +41,61 @@ fn vs_main(@location(0) packed: u32, @location(1) chunk_origin: vec3<f32>) -> Ve
 
 @fragment
 fn fs_main(in: VertexOutput) -> SceneOutput {
+    return shade(in);
+}
+
+/// A face lit, textured and fogged. Entry points can't call each other, so every one that draws
+/// faces calls this.
+fn shade(in: VertexOutput) -> SceneOutput {
     let color = textureSample(block_texture, block_sampler, in.uv, in.tile);
     var out: SceneOutput;
     out.color = vec4<f32>(color.rgb * light(in.normal) * in.occlusion, color.a);
     out.emissive = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     return fogged(out, in.world_position);
+}
+
+/// Water nearer than the cutaway's plane is left out with the terrain.
+@fragment
+fn fs_water(in: VertexOutput) -> SceneOutput {
+    let out = shade(in);
+    if dot(frame.cut_plane.xyz, in.world_position) < frame.cut_plane.w {
+        discard;
+    }
+    return out;
+}
+
+/// Terrain for a camera inside rock. Everything nearer than the cut plane is left out. The terrain
+/// mesh is closed, so where the plane passes through rock, the first face the view ray meets past
+/// the plane is the back of the one where it leaves that rock, and that face is drawn as the cut
+/// stone on the plane in front of it. It keeps its own depth: moved onto the plane, the back of a
+/// far face would cover a near face seen through open space.
+@fragment
+fn fs_cutaway(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> SceneOutput {
+    let plane = frame.cut_plane;
+    let camera = frame.camera_position;
+    let ray = in.world_position - camera;
+    let on_plane = camera + ray * ((plane.w - dot(plane.xyz, camera)) / dot(plane.xyz, ray));
+    // Stone faces the plane from whichever axis is closest to the view, one texture per block.
+    let facing = abs(plane.xyz);
+    var uv = on_plane.xz;
+    if facing.x >= facing.y && facing.x >= facing.z {
+        uv = on_plane.zy;
+    } else if facing.z >= facing.y {
+        uv = on_plane.xy;
+    }
+    // Sampled at the top level of detail, since `fract` jumps at block edges and would confuse the
+    // choice of level there.
+    let stone = textureSampleLevel(block_texture, block_sampler, fract(uv), STONE_TILE, 0.0).rgb;
+    var out = shade(in);
+    if !front_facing {
+        // Darker than any lit face, so the cut stands apart from the tunnels seen through it.
+        var cut: SceneOutput;
+        cut.color = vec4<f32>(stone * 0.35, 1.0);
+        cut.emissive = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        out = fogged(cut, on_plane);
+    }
+    if dot(plane.xyz, in.world_position) < plane.w {
+        discard;
+    }
+    return out;
 }

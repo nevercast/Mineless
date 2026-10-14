@@ -79,6 +79,7 @@ impl AvatarRenderer {
                 attributes: &VERTEX_ATTRIBUTES,
             })],
             super::Layer::Opaque,
+            "fs_main",
         );
 
         Self {

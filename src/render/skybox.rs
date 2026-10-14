@@ -45,6 +45,7 @@ impl Skybox {
             &[Some(frame_layout), Some(&layout)],
             &[],
             super::Layer::Background,
+            "fs_main",
         );
         Self { pipeline, bind_group }
     }

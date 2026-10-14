@@ -25,6 +25,7 @@ impl Border {
                 attributes: &wgpu::vertex_attr_array![0 => Float32x3],
             })],
             super::Layer::Translucent,
+            "fs_main",
         );
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("border"),
