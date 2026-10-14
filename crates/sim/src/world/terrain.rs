@@ -5,6 +5,10 @@
 //! made of: sandy and gravelly coasts and sea floors, grass, bare rock on cliffs and snow on cold
 //! high ground.
 
+use std::num::NonZeroUsize;
+use std::panic::resume_unwind;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use glam::{IVec2, IVec3, Vec2, Vec3, Vec3Swizzles};
@@ -181,12 +185,11 @@ impl Generation {
         loop {
             match self.stage() {
                 Stage::Chunks => {
-                    let column = self.columns[self.generated];
-                    let chunks = generate_column(self.seed, column, self.extent);
-                    for (y, chunk) in self.extent.chunk_levels().zip(chunks) {
-                        world.insert(IVec3::new(column.x, y, column.y), chunk);
+                    for (column, chunks) in self.generate_columns(start, budget) {
+                        for (y, chunk) in self.extent.chunk_levels().zip(chunks) {
+                            world.insert(IVec3::new(column.x, y, column.y), chunk);
+                        }
                     }
-                    self.generated += 1;
                 }
                 Stage::Sea => self.sea.work(world, &self.chunks),
                 Stage::Done => return,
@@ -196,6 +199,43 @@ impl Generation {
             }
         }
     }
+
+    /// Generates the next columns on a worker per core until `budget` has passed since `start`,
+    /// at least one column each. Columns don't depend on each other, so the workers share
+    /// nothing but the count of columns taken.
+    fn generate_columns(&mut self, start: Instant, budget: Duration) -> Vec<(IVec2, Vec<Chunk>)> {
+        let (seed, extent, columns) = (self.seed, self.extent, &self.columns);
+        let next = AtomicUsize::new(self.generated);
+        let generated = thread::scope(|scope| {
+            let workers: Vec<_> = (0..workers())
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut generated = Vec::new();
+                        while let Some(&column) = columns.get(next.fetch_add(1, Ordering::Relaxed))
+                        {
+                            generated.push((column, generate_column(seed, column, extent)));
+                            if start.elapsed() >= budget {
+                                break;
+                            }
+                        }
+                        generated
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().unwrap_or_else(|panic| resume_unwind(panic)))
+                .collect()
+        });
+        // Every column taken was generated, and they were taken in order.
+        self.generated = next.into_inner().min(self.columns.len());
+        generated
+    }
+}
+
+/// How many threads generate columns: one per core.
+fn workers() -> usize {
+    thread::available_parallelism().map_or(1, NonZeroUsize::get)
 }
 
 /// The chunks of the column at chunk coordinate `column`, bottom to top, in a world reaching
@@ -715,7 +755,8 @@ mod tests {
         let mut world = World::default();
         let mut generation = Generation::new(EXTENT, 5);
         generation.work(&mut world, Duration::ZERO);
-        assert_eq!(world.chunks.len(), EXTENT.chunk_levels().count());
+        let first_slice = world.chunks.len() / EXTENT.chunk_levels().count();
+        assert!((1..=workers()).contains(&first_slice), "{first_slice}");
         let mut slices = 1;
         let mut seen_sea = false;
         while generation.stage() != Stage::Done {
@@ -725,7 +766,7 @@ mod tests {
             generation.work(&mut world, Duration::ZERO);
             slices += 1;
         }
-        assert!(seen_sea && slices > EXTENT.chunk_columns().count() + 1);
+        assert!(seen_sea && slices > EXTENT.chunk_columns().count() / workers() + 1);
         assert_eq!(world.chunks.len(), whole.chunks.len());
         for (position, chunk) in &whole.chunks {
             assert!(world.chunks[position] == *chunk, "{position}");
