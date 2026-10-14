@@ -3,7 +3,7 @@ pub mod terrain;
 
 use std::collections::HashMap;
 
-use glam::IVec3;
+use glam::{IVec2, IVec3, Vec3Swizzles};
 
 use chunk::Chunk;
 pub use chunk::{Axis, Block, CHUNK_SIZE};
@@ -46,12 +46,22 @@ impl Extent {
     /// Every chunk holding at least one block of the world. The outermost ones stick out past
     /// it when the half-width isn't a whole number of chunks.
     pub fn chunk_positions(self) -> impl Iterator<Item = IVec3> {
-        let first = self.min().div_euclid(IVec3::splat(SIZE));
-        let last = (self.max() - 1).div_euclid(IVec3::splat(SIZE));
-        (first.x..=last.x).flat_map(move |x| {
-            (first.y..=last.y)
-                .flat_map(move |y| (first.z..=last.z).map(move |z| IVec3::new(x, y, z)))
+        self.chunk_columns().flat_map(move |column| {
+            self.chunk_levels()
+                .map(move |y| IVec3::new(column.x, y, column.y))
         })
+    }
+
+    /// The x and z chunk coordinates of every column of chunks in the world.
+    pub fn chunk_columns(self) -> impl Iterator<Item = IVec2> {
+        let first = self.min().xz().div_euclid(IVec2::splat(SIZE));
+        let last = (self.max().xz() - 1).div_euclid(IVec2::splat(SIZE));
+        (first.x..=last.x).flat_map(move |x| (first.y..=last.y).map(move |z| IVec2::new(x, z)))
+    }
+
+    /// The chunk y coordinates of every column, bottom to top.
+    pub fn chunk_levels(self) -> std::ops::RangeInclusive<i32> {
+        self.min().y.div_euclid(SIZE)..=(self.max().y - 1).div_euclid(SIZE)
     }
 }
 

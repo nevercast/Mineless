@@ -113,29 +113,32 @@ impl Tree {
     }
 }
 
-/// Grows every tree that reaches into the chunk at `origin`, writing only its cells. Leaves go
-/// in first and only into air, then logs over anything, so where trees overlap the result is
-/// the same in any order.
-pub(super) fn grow(
+/// Every tree that reaches into the chunk column whose bottom chunk is at `origin`.
+pub(super) fn reaching(
     seed: u32,
-    chunk: &mut Chunk,
     origin: IVec3,
     columns: &Neighbourhood,
     extent: Extent,
-) {
+) -> Vec<Tree> {
     let first = (origin.xz() - CANOPY_RADIUS).div_euclid(IVec2::splat(CELL));
     let last = (origin.xz() + SIZE - 1 + CANOPY_RADIUS).div_euclid(IVec2::splat(CELL));
-    let reaches_chunk = |column: IVec2| {
+    let reaches_column = |column: IVec2| {
         let local = column - origin.xz();
         local.cmpge(IVec2::splat(-CANOPY_RADIUS)).all()
             && local.cmplt(IVec2::splat(SIZE + CANOPY_RADIUS)).all()
     };
-    let trees: Vec<Tree> = (first.x..=last.x)
+    (first.x..=last.x)
         .flat_map(|x| (first.y..=last.y).map(move |z| IVec2::new(x, z)))
         .map(|cell| candidate(seed, cell))
-        .filter(|&(column, _)| reaches_chunk(column))
+        .filter(|&(column, _)| reaches_column(column))
         .filter_map(|(column, roll)| Tree::grown(seed, column, roll, columns, extent))
-        .collect();
+        .collect()
+}
+
+/// Writes the cells of `trees` that fall in the chunk at `origin`. Leaves go in first and only
+/// into air, then logs over anything, so where trees overlap the result is the same in any
+/// order.
+pub(super) fn plant(chunk: &mut Chunk, origin: IVec3, trees: &[Tree]) {
     let local = |position: IVec3| {
         let local = position - origin;
         (local.cmpge(IVec3::ZERO).all() && local.cmplt(IVec3::splat(SIZE)).all())
@@ -148,7 +151,7 @@ pub(super) fn grow(
             chunk.set(at.x, at.y, at.z, Block::OakLeaves);
         }
     }
-    for tree in &trees {
+    for tree in trees {
         // No grass grows under a trunk.
         if let Some(at) = local(tree.base - IVec3::Y) {
             chunk.set(at.x, at.y, at.z, Block::Dirt);

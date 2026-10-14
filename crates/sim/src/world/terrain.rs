@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use glam::{IVec3, Vec2, Vec3};
+use glam::{IVec2, IVec3, Vec2, Vec3};
 
 mod noise;
 mod sea;
@@ -133,8 +133,9 @@ pub enum Stage {
 pub struct Generation {
     seed: u32,
     extent: Extent,
-    chunks: Vec<IVec3>,
+    columns: Vec<IVec2>,
     generated: usize,
+    chunks: Vec<IVec3>,
     sea: SeaFill,
 }
 
@@ -147,14 +148,15 @@ impl Generation {
         Self {
             seed,
             extent,
-            chunks: extent.chunk_positions().collect(),
+            columns: extent.chunk_columns().collect(),
             generated: 0,
+            chunks: extent.chunk_positions().collect(),
             sea: SeaFill::new(extent),
         }
     }
 
     pub fn stage(&self) -> Stage {
-        if self.generated < self.chunks.len() {
+        if self.generated < self.columns.len() {
             Stage::Chunks
         } else if !self.sea.done(&self.chunks) {
             Stage::Sea
@@ -166,7 +168,7 @@ impl Generation {
     /// The fraction of the current stage's work done, in `0..=1`.
     pub fn progress(&self) -> f32 {
         match self.stage() {
-            Stage::Chunks => self.generated as f32 / self.chunks.len() as f32,
+            Stage::Chunks => self.generated as f32 / self.columns.len() as f32,
             Stage::Sea => self.sea.progress(&self.chunks),
             Stage::Done => 1.0,
         }
@@ -179,8 +181,11 @@ impl Generation {
         loop {
             match self.stage() {
                 Stage::Chunks => {
-                    let position = self.chunks[self.generated];
-                    world.insert(position, generate_chunk(self.seed, position, self.extent));
+                    let column = self.columns[self.generated];
+                    let chunks = generate_column(self.seed, column, self.extent);
+                    for (y, chunk) in self.extent.chunk_levels().zip(chunks) {
+                        world.insert(IVec3::new(column.x, y, column.y), chunk);
+                    }
                     self.generated += 1;
                 }
                 Stage::Sea => self.sea.work(world, &self.chunks),
@@ -193,45 +198,56 @@ impl Generation {
     }
 }
 
-/// The chunk at `position` in a world reaching over `extent`, from nothing but the seed and
-/// those two, so chunks come out the same whatever order they are generated in.
-fn generate_chunk(seed: u32, position: IVec3, extent: Extent) -> Chunk {
-    let mut chunk = Chunk::empty();
-    let origin = position * SIZE;
-    // Nothing of the terrain reaches its own height, so chunks above it skip shaping it.
-    let columns = (origin.y < HEIGHT).then(|| Neighbourhood::around(seed, origin));
-    for local_x in 0..CHUNK_SIZE {
-        for local_z in 0..CHUNK_SIZE {
-            let (x, z) = (origin.x + local_x as i32, origin.z + local_z as i32);
-            if !extent.contains_column(x, z) {
-                continue;
-            }
-            let on_edge = extent.on_edge(x, z);
-            let terrain = columns
-                .as_ref()
-                .filter(|_| !on_edge)
-                .map(|columns| (Surface::at(seed, x, z, columns), columns.column(x, z)));
-            for local_y in 0..CHUNK_SIZE {
-                let y = origin.y + local_y as i32;
-                let block = match &terrain {
-                    _ if on_edge => Block::WorldBorder,
-                    Some((surface, column)) => surface.block(column, y),
-                    None => Block::Air,
-                };
-                if block != Block::Air {
-                    chunk.set(local_x, local_y, local_z, block);
+/// The chunks of the column at chunk coordinate `column`, bottom to top, in a world reaching
+/// over `extent`. They come from nothing but the seed and those two, so columns come out the same
+/// whatever order they are generated in. The terrain of the column's blocks is worked out once
+/// and shared by every chunk in it.
+fn generate_column(seed: u32, column: IVec2, extent: Extent) -> Vec<Chunk> {
+    let origin = IVec3::new(column.x, 0, column.y) * SIZE;
+    let columns = Neighbourhood::around(seed, origin);
+    let surfaces: Vec<Surface> = (0..SIZE)
+        .flat_map(|i| (0..SIZE).map(move |k| (origin.x + i, origin.z + k)))
+        .map(|(x, z)| Surface::at(seed, x, z, &columns))
+        .collect();
+    let trees = trees::reaching(seed, origin, &columns, extent);
+    extent
+        .chunk_levels()
+        .map(|level| {
+            let origin = origin.with_y(level * SIZE);
+            let mut chunk = Chunk::empty();
+            for local_x in 0..CHUNK_SIZE {
+                for local_z in 0..CHUNK_SIZE {
+                    let (x, z) = (origin.x + local_x as i32, origin.z + local_z as i32);
+                    let on_edge = extent.on_edge(x, z);
+                    // Nothing of the terrain reaches its own height, so chunks above it skip
+                    // shaping it.
+                    if !extent.contains_column(x, z) || (!on_edge && origin.y >= HEIGHT) {
+                        continue;
+                    }
+                    let surface = &surfaces[local_x * CHUNK_SIZE + local_z];
+                    let column = columns.column(x, z);
+                    for local_y in 0..CHUNK_SIZE {
+                        let block = if on_edge {
+                            Block::WorldBorder
+                        } else {
+                            surface.block(column, origin.y + local_y as i32)
+                        };
+                        if block != Block::Air {
+                            chunk.set(local_x, local_y, local_z, block);
+                        }
+                    }
                 }
             }
-        }
-    }
-    if let Some(columns) = &columns {
-        trees::grow(seed, &mut chunk, origin, columns, extent);
-    }
-    chunk.compact();
-    chunk
+            if origin.y < HEIGHT {
+                trees::plant(&mut chunk, origin, &trees);
+            }
+            chunk.compact();
+            chunk
+        })
+        .collect()
 }
 
-/// The columns of one chunk and a border round it, with their tops, since the cliff test and
+/// The block columns of one chunk column and a border round it, with their tops, since the cliff test and
 /// trees look at neighbouring columns.
 struct Neighbourhood {
     /// World position of the first column.
@@ -575,7 +591,7 @@ impl Fields {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::IVec2;
+    use glam::Vec3Swizzles;
 
     /// Small enough to generate quickly, taller than the terrain, and not a whole number of
     /// chunks across, so the border stands partway into the outermost chunks.
@@ -605,23 +621,37 @@ mod tests {
         columns(seed).iter().map(Column::top).collect()
     }
 
+    /// Generates each column on its own into `world`.
+    fn insert_columns(
+        world: &mut World,
+        seed: u32,
+        extent: Extent,
+        columns: impl Iterator<Item = IVec2>,
+    ) {
+        for column in columns {
+            for (y, chunk) in extent
+                .chunk_levels()
+                .zip(generate_column(seed, column, extent))
+            {
+                world.insert(IVec3::new(column.x, y, column.y), chunk);
+            }
+        }
+    }
+
+    /// The chunk at `position`, cut from its column generated on its own.
+    fn generate_chunk(seed: u32, position: IVec3, extent: Extent) -> Chunk {
+        generate_column(seed, position.xz(), extent).swap_remove(position.y as usize)
+    }
+
     #[test]
     fn generation_order_does_not_change_the_world() {
-        let positions: Vec<IVec3> = EXTENT.chunk_positions().collect();
-        assert!(
-            positions
-                .iter()
-                .any(|position| position.cmplt(IVec3::ZERO).any())
-        );
+        let columns: Vec<IVec2> = EXTENT.chunk_columns().collect();
+        assert!(columns.iter().any(|column| column.cmplt(IVec2::ZERO).any()));
         let mut in_order = World::default();
-        for &position in &positions {
-            in_order.insert(position, generate_chunk(5, position, EXTENT));
-        }
+        insert_columns(&mut in_order, 5, EXTENT, columns.iter().copied());
         let mut reversed = World::default();
-        for &position in positions.iter().rev() {
-            reversed.insert(position, generate_chunk(5, position, EXTENT));
-        }
-        for position in positions {
+        insert_columns(&mut reversed, 5, EXTENT, columns.iter().rev().copied());
+        for position in EXTENT.chunk_positions() {
             assert!(
                 in_order.chunks[&position] == reversed.chunks[&position],
                 "{position}"
@@ -630,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chunk_generated_alone_matches_the_whole_world() {
+    fn a_column_generated_alone_matches_the_whole_world() {
         let world = generate(EXTENT, 5);
         let border = IVec3::new(-2, 1, 0);
         let interior = IVec3::new(-1, 2, 0);
@@ -667,7 +697,7 @@ mod tests {
         let mut world = World::default();
         let mut generation = Generation::new(EXTENT, 5);
         generation.work(&mut world, Duration::ZERO);
-        assert_eq!(world.chunks.len(), 1);
+        assert_eq!(world.chunks.len(), EXTENT.chunk_levels().count());
         let mut slices = 1;
         let mut seen_sea = false;
         while generation.stage() != Stage::Done {
@@ -677,7 +707,7 @@ mod tests {
             generation.work(&mut world, Duration::ZERO);
             slices += 1;
         }
-        assert!(seen_sea && slices > EXTENT.chunk_positions().count() + 1);
+        assert!(seen_sea && slices > EXTENT.chunk_columns().count() + 1);
         assert_eq!(world.chunks.len(), whole.chunks.len());
         for (position, chunk) in &whole.chunks {
             assert!(world.chunks[position] == *chunk, "{position}");
@@ -779,14 +809,8 @@ mod tests {
             (0..4)
                 .map(|seed| {
                     let mut world = World::default();
-                    for cx in -3..3 {
-                        for cy in 0..HEIGHT / SIZE {
-                            for cz in -3..3 {
-                                let position = IVec3::new(cx, cy, cz);
-                                world.insert(position, generate_chunk(seed, position, FULL_WORLD));
-                            }
-                        }
-                    }
+                    let columns = (-3..3).flat_map(|x| (-3..3).map(move |z| IVec2::new(x, z)));
+                    insert_columns(&mut world, seed, FULL_WORLD, columns);
                     world
                 })
                 .collect()
@@ -1040,15 +1064,9 @@ mod tests {
         // canopy can touch it without holding it up.
         let mut world = World::default();
         let (low, high) = (IVec3::new(4, 4, 2), IVec3::new(5, 5, 4));
-        for cx in low.x..=high.x {
-            for cy in low.y..=high.y {
-                for cz in low.z..=high.z {
-                    let position = IVec3::new(cx, cy, cz);
-                    let chunk = generate_chunk(BEACH_AND_FLOATING, position, FULL_WORLD);
-                    world.insert(position, chunk);
-                }
-            }
-        }
+        let columns =
+            (low.x..=high.x).flat_map(|x| (low.z..=high.z).map(move |z| IVec2::new(x, z)));
+        insert_columns(&mut world, BEACH_AND_FLOATING, FULL_WORLD, columns);
         let (min, max) = (low * SIZE, (high + 1) * SIZE - 1);
         let ground = |position: IVec3| {
             let block = world.block(position);

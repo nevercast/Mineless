@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use glam::{IVec2, IVec3, Vec2, Vec3Swizzles};
+use glam::{IVec2, IVec3, Vec2};
 use sim::world::{CHUNK_SIZE, Extent, World};
 
 use crate::mesher::{self, ChunkMesh};
@@ -26,16 +26,9 @@ pub struct MeshedArea {
 
 impl MeshedArea {
     pub fn new(extent: Extent) -> Self {
-        let chunks: Vec<IVec3> = extent.chunk_positions().collect();
-        let lowest = chunks.iter().map(|chunk| chunk.y).min().unwrap_or(0);
-        let highest = chunks.iter().map(|chunk| chunk.y).max().unwrap_or(0);
         Self {
-            columns: chunks
-                .iter()
-                .filter(|chunk| chunk.y == lowest)
-                .map(|chunk| chunk.xz())
-                .collect(),
-            levels: lowest..=highest,
+            columns: extent.chunk_columns().collect(),
+            levels: extent.chunk_levels(),
             meshed: HashSet::new(),
         }
     }
