@@ -169,6 +169,25 @@ impl World {
             .map_or(0, |y| y + 1)
     }
 
+    /// Whether any block above `position` in its column passes `counts`. Unloaded space is air, and a chunk one block fills
+    /// is checked once.
+    pub fn any_above(&self, position: IVec3, counts: impl Fn(Block) -> bool) -> bool {
+        let (mut chunk, local) = split(position);
+        let mut from = local.y + 1;
+        while let Some(stored) = self.chunks.get(&chunk) {
+            let found = match stored {
+                Chunk::Uniform(block) => from < CHUNK_SIZE && counts(*block),
+                Chunk::Mixed(_) => (from..CHUNK_SIZE).any(|y| counts(stored.get(local.x, y, local.z))),
+            };
+            if found {
+                return true;
+            }
+            chunk.y += 1;
+            from = 0;
+        }
+        false
+    }
+
     /// The block filling the chunk at chunk coordinate `chunk`, if one block fills all of it.
     pub fn uniform_chunk(&self, chunk: IVec3) -> Option<Block> {
         match self.chunks.get(&chunk)? {
@@ -221,6 +240,23 @@ mod tests {
         assert_eq!(world.block(IVec3::new(-1, 5, 0)), Block::Air);
         assert_eq!(world.block(IVec3::new(0, 5, -1)), Block::Air);
         assert_eq!(world.column_top(-2, -2), 0);
+    }
+
+    #[test]
+    fn blocks_above_are_found_in_higher_chunks_and_not_below() {
+        let mut world = World::empty(IVec3::new(1, 3, 1));
+        world.insert(IVec3::new(0, 1, 0), Chunk::Uniform(Block::Stone));
+        world.set_block(IVec3::new(2, 40, 3), Block::Dirt);
+        let stone = |block| block == Block::Stone;
+        let dirt = |block| block == Block::Dirt;
+        assert!(world.any_above(IVec3::new(2, 3, 3), stone));
+        assert!(world.any_above(IVec3::new(2, 3, 3), dirt));
+        assert!(world.any_above(IVec3::new(2, 39, 3), dirt));
+        assert!(!world.any_above(IVec3::new(2, 40, 3), dirt));
+        assert!(!world.any_above(IVec3::new(5, 3, 3), dirt));
+        // Within the uniform chunk only the cells above count, and there are none above its top row.
+        assert!(world.any_above(IVec3::new(5, 30, 3), stone));
+        assert!(!world.any_above(IVec3::new(5, 31, 3), stone));
     }
 
     #[test]
