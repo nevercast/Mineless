@@ -13,7 +13,6 @@ use crate::render::Renderer;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Phase {
     ShapingLand,
-    FillingSea,
     BuildingMeshes,
 }
 
@@ -21,7 +20,6 @@ impl Phase {
     pub fn name(self) -> &'static str {
         match self {
             Phase::ShapingLand => "Shaping the land",
-            Phase::FillingSea => "Filling the sea",
             Phase::BuildingMeshes => "Building meshes",
         }
     }
@@ -76,7 +74,6 @@ impl Loading {
         self.generation.work(world, budget);
         let phase = match self.generation.stage() {
             Stage::Chunks => Phase::ShapingLand,
-            Stage::Sea => Phase::FillingSea,
             Stage::Done => Phase::BuildingMeshes,
         };
         if phase != self.phase {

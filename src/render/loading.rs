@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn every_character_on_the_screen_has_a_glyph() {
-        let phases = [Phase::ShapingLand, Phase::FillingSea, Phase::BuildingMeshes];
+        let phases = [Phase::ShapingLand, Phase::BuildingMeshes];
         let lines = phases.map(|phase| phase.name());
         for line in lines.into_iter().chain([HEADING, "0123456789%"]) {
             for character in line.chars() {

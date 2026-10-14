@@ -14,18 +14,15 @@ use std::time::{Duration, Instant};
 use glam::{IVec2, IVec3, Vec2, Vec3, Vec3Swizzles};
 
 mod noise;
-mod sea;
 mod trees;
 
 use super::chunk::Chunk;
 use super::{Block, CHUNK_SIZE, Extent, SIZE, World};
 use noise::{NOISE_BOUND, fractal, gradient_2d, gradient_3d, lerp, smoothstep};
-use sea::SeaFill;
 
 /// The height the terrain is shaped for. The world may be taller, leaving air above it.
 pub const HEIGHT: i32 = 128;
-/// Air below this height that is open to the sea will be water; the sea surface is the top of
-/// the row below it.
+/// Every open cell below this height is water; the sea surface is the top of the row below it.
 pub const SEA_LEVEL: i32 = 40;
 
 /// Where the low ground sits relative to the sea, and how far it strays above and below.
@@ -128,7 +125,6 @@ pub fn generate(extent: Extent, seed: u32) -> World {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stage {
     Chunks,
-    Sea,
     Done,
 }
 
@@ -139,8 +135,6 @@ pub struct Generation {
     extent: Extent,
     columns: Vec<IVec2>,
     generated: usize,
-    chunks: Vec<IVec3>,
-    sea: SeaFill,
 }
 
 impl Generation {
@@ -151,16 +145,12 @@ impl Generation {
             extent,
             columns: extent.chunk_columns().collect(),
             generated: 0,
-            chunks: extent.chunk_positions().collect(),
-            sea: SeaFill::new(extent),
         }
     }
 
     pub fn stage(&self) -> Stage {
         if self.generated < self.columns.len() {
             Stage::Chunks
-        } else if !self.sea.done(&self.chunks) {
-            Stage::Sea
         } else {
             Stage::Done
         }
@@ -170,7 +160,6 @@ impl Generation {
     pub fn progress(&self) -> f32 {
         match self.stage() {
             Stage::Chunks => self.generated as f32 / self.columns.len() as f32,
-            Stage::Sea => self.sea.progress(&self.chunks),
             Stage::Done => 1.0,
         }
     }
@@ -188,7 +177,6 @@ impl Generation {
                         }
                     }
                 }
-                Stage::Sea => self.sea.work(world, &self.chunks),
                 Stage::Done => return,
             }
             if start.elapsed() >= budget {
@@ -362,6 +350,13 @@ fn snowy(temperature: f32, y: i32) -> bool {
     y >= SEA_LEVEL && temperature < LAPSE * (y - SEA_LEVEL) as f32
 }
 
+/// What fills a cell the terrain leaves open: sea below sea level, sky above. Without caves, the
+/// hollows below sea level all but always reach the sea, so this needs no flood to find them, and
+/// each chunk gets its water as it is shaped.
+fn open(y: i32) -> Block {
+    if y < SEA_LEVEL { Block::Water } else { Block::Air }
+}
+
 /// What the surfaces of one column are made of.
 struct Surface {
     top: i32,
@@ -412,7 +407,7 @@ impl Surface {
     /// floating land are dressed as well as the column top.
     fn block(&self, column: &Column, y: i32) -> Block {
         if !column.solid(y) {
-            return Block::Air;
+            return open(y);
         }
         let Some(depth) = (0..self.run).find(|&depth| !column.solid(y + depth + 1)) else {
             return Block::Stone;
@@ -430,6 +425,7 @@ impl Surface {
         for (y, block) in (0..HEIGHT).zip(&mut blocks).rev() {
             if !column.solid(y) {
                 exposed_top = None;
+                *block = open(y);
                 continue;
             }
             let top = *exposed_top.get_or_insert(y);
@@ -685,8 +681,8 @@ mod tests {
         assert_eq!(world.block(IVec3::new(-24, 20, 5)), Block::WorldBorder);
     }
 
-    /// A hash of every block of a generated world, recorded before chunks could be stored as one
-    /// block and before the sea fill could be sliced, so neither changed the world.
+    /// A hash of every block of a generated world, recorded before chunks could be stored as one block, before the sea fill could be
+    /// sliced and before water became part of shaping each chunk. None of these changed this world.
     #[test]
     fn the_world_is_unchanged_block_for_block() {
         let world = generate(EXTENT, 5);
@@ -712,18 +708,65 @@ mod tests {
         let first_slice = world.chunks.len() / EXTENT.chunk_levels().count();
         assert!((1..=workers()).contains(&first_slice), "{first_slice}");
         let mut slices = 1;
-        let mut seen_sea = false;
         while generation.stage() != Stage::Done {
-            seen_sea |= generation.stage() == Stage::Sea;
             let progress = generation.progress();
             assert!((0.0..=1.0).contains(&progress), "{progress}");
             generation.work(&mut world, Duration::ZERO);
             slices += 1;
         }
-        assert!(seen_sea && slices > EXTENT.chunk_columns().count() / workers() + 1);
+        assert!(slices >= EXTENT.chunk_columns().count().div_ceil(workers()));
         assert_eq!(world.chunks.len(), whole.chunks.len());
         for (position, chunk) in &whole.chunks {
             assert!(world.chunks[position] == *chunk, "{position}");
+        }
+    }
+
+    /// A world with a stretch of sea, a coast and sea floor.
+    const SEA_WORLD: Extent = Extent {
+        half_width: 48,
+        height: HEIGHT,
+    };
+
+    #[test]
+    fn open_cells_below_sea_level_are_water_and_none_above_it() {
+        let world = generate(SEA_WORLD, 6);
+        let (min, max) = (SEA_WORLD.min(), SEA_WORLD.max());
+        let mut water = 0;
+        for x in min.x..max.x {
+            for z in min.z..max.z {
+                for y in 0..HEIGHT {
+                    let block = world.block(IVec3::new(x, y, z));
+                    if y < SEA_LEVEL {
+                        assert!(block != Block::Air, "air at {x}, {y}, {z}");
+                        water += usize::from(block == Block::Water);
+                    } else {
+                        assert!(block != Block::Water, "water at {x}, {y}, {z}");
+                    }
+                }
+            }
+        }
+        assert!(water > 0);
+    }
+
+    #[test]
+    fn a_chunk_of_sea_floor_generated_alone_has_its_water() {
+        let level = (SEA_LEVEL - 1) / SIZE;
+        let sea_floor = SEA_WORLD
+            .chunk_columns()
+            .map(|column| generate_chunk(6, column.extend(level).xzy(), SEA_WORLD))
+            .find(|chunk| {
+                let blocks: Vec<Block> = (0..CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
+                    .map(|i| chunk.get(i / (CHUNK_SIZE * CHUNK_SIZE), i / CHUNK_SIZE % CHUNK_SIZE, i % CHUNK_SIZE))
+                    .collect();
+                blocks.contains(&Block::Water) && blocks.iter().any(|&block| block != Block::Water && block != Block::Air)
+            })
+            .expect("the sea world has sea floor");
+        for x in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for y in 0..(SEA_LEVEL - level * SIZE) as usize {
+                    assert!(sea_floor.get(x, y, z) != Block::Air, "{x}, {y}, {z}");
+                }
+            }
         }
     }
 
@@ -839,7 +882,7 @@ mod tests {
     }
 
     fn exposed(world: &World, position: IVec3) -> bool {
-        world.block(position) != Block::Air && world.block(position + IVec3::Y) == Block::Air
+        world.block(position).is_solid() && !world.block(position + IVec3::Y).is_solid()
     }
 
     #[test]
@@ -1004,7 +1047,7 @@ mod tests {
                     let column = lattice.column(x, z);
                     for y in 0..HEIGHT {
                         let block = world.block(IVec3::new(x, y, z));
-                        let solid = block != Block::Air && !is_tree(block);
+                        let solid = block.is_solid() && !is_tree(block);
                         assert_eq!(solid, column.solid(y), "{x}, {y}, {z}");
                     }
                 }
