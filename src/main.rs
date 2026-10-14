@@ -216,10 +216,10 @@ fn set_mouse_capture(window: &Window, capture: bool) -> bool {
     grabbed
 }
 
-/// 2000 blocks square, from -1000 to 1000, generated whole on first load, and 160 tall, which
-/// leaves room to build above the highest mountains.
+/// 2016 blocks square, from -1008 to 1008 so the border lies on chunk edges, generated whole on
+/// first load, and 160 tall, which leaves room to build above the highest mountains.
 const WORLD: Extent = Extent {
-    half_width: 1000,
+    half_width: 1008,
     height: 160,
 };
 /// The world unless `--seed` picks another. This one shows sea, beach, uplands, forest and a

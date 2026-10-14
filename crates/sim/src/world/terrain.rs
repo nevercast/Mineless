@@ -1096,12 +1096,12 @@ mod tests {
     }
 
     #[test]
-    fn a_2000_block_world_has_its_border_on_its_outermost_columns() {
+    fn a_2016_block_world_has_its_border_on_its_outermost_chunk_edges() {
         let extent = Extent {
-            half_width: 1000,
+            half_width: 1008,
             height: HEIGHT + 2 * SIZE,
         };
-        // The outermost chunks run from -1008 and to 1007, past the border at -1000 and 999.
+        // The outermost chunks, -63 and 62, end exactly at the border, -1008 and 1007.
         for position in [
             IVec3::new(-63, 3, 0),
             IVec3::new(62, 0, 5),
@@ -1113,12 +1113,10 @@ mod tests {
             let origin = position * SIZE;
             for local in (0..SIZE).flat_map(|x| (0..SIZE).map(move |z| IVec3::new(x, 0, z))) {
                 let (x, z) = (origin.x + local.x, origin.z + local.z);
-                let inside = (-1000..1000).contains(&x) && (-1000..1000).contains(&z);
-                let ring = inside && (x == -1000 || z == -1000 || x == 999 || z == 999);
+                let ring = x == -1008 || z == -1008 || x == 1007 || z == 1007;
                 for y in 0..SIZE {
                     let block = chunk.get(local.x as usize, y as usize, local.z as usize);
                     assert_eq!(block == Block::WorldBorder, ring, "{x}, {z}");
-                    assert!(inside || block == Block::Air, "{x}, {z}");
                 }
             }
         }
