@@ -16,11 +16,10 @@ mod skins;
 mod skybox;
 mod texture;
 
-pub use camera::Camera;
+pub use camera::{Camera, Frustum};
 
 use avatar::AvatarRenderer;
 use border::Border;
-use camera::Frustum;
 use chunk_meshes::ChunkMeshes;
 use loading::LoadingScreen;
 use post::{HDR_FORMAT, PostProcess};
@@ -31,7 +30,7 @@ use crate::meshed_area::VIEW_DISTANCE;
 use crate::mesher::{ChunkMesh, Vertex};
 use crate::sky::Sky;
 use sim::avatar::Avatar;
-use sim::world::{CHUNK_SIZE, Extent, terrain};
+use sim::world::{CHUNK_SIZE, ChunkSet, Extent, terrain};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Colour targets of every scene pipeline, matching `SceneOutput` in frame.wgsl.
@@ -248,13 +247,23 @@ impl Renderer {
         self.queue.present(frame);
     }
 
-    /// `time` is seconds since midnight, for animation. Returns how long the frame took to draw,
-    /// CPU and GPU together, or `None` if there was no frame to draw into.
-    pub fn render(&mut self, camera: &Camera, sky: &Sky, time: f32, avatars: &[Avatar]) -> Option<Duration> {
+    /// What `camera` can see with this window's shape.
+    pub fn frustum(&self, camera: &Camera) -> Frustum {
+        Frustum::new(self.view_projection(camera))
+    }
+
+    fn view_projection(&self, camera: &Camera) -> Mat4 {
+        camera.view_projection(self.config.width as f32 / self.config.height as f32)
+    }
+
+    /// `time` is seconds since midnight, for animation. Only chunks in `seen` are drawn, if it is
+    /// given. Returns what was drawn and how long it took, or `None` if there was no frame to draw
+    /// into.
+    pub fn render(&mut self, camera: &Camera, sky: &Sky, time: f32, avatars: &[Avatar], seen: Option<&ChunkSet>) -> Option<Drawn> {
         // Acquiring the frame is where vsync blocks, so the draw time starts after it.
         let frame = self.acquire_frame()?;
         let draw_start = Instant::now();
-        let view_projection = camera.view_projection(self.config.width as f32 / self.config.height as f32);
+        let view_projection = self.view_projection(camera);
         self.queue.write_buffer(
             &self.frame_buffer,
             0,
@@ -276,6 +285,7 @@ impl Renderer {
 
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut drawn_chunks = ChunkSet::default();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("main"),
@@ -307,8 +317,9 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
-            for (_, mesh) in self.chunk_meshes.visible(&frustum) {
+            for (chunk, mesh) in self.chunk_meshes.visible(&frustum, seen) {
                 draw_chunk(&mut pass, mesh);
+                drawn_chunks.insert(chunk);
             }
             self.avatar.draw(&mut pass, &self.frame_bind_group);
             // The border is nearly always the farthest translucent thing, so it goes under water.
@@ -316,7 +327,7 @@ impl Renderer {
 
             // Water blends over everything opaque, far chunks first so nearer water blends over
             // them. Faces within a chunk are unsorted; flat still water of one colour hides that.
-            let mut water: Vec<_> = self.water_meshes.visible(&frustum).collect();
+            let mut water: Vec<_> = self.water_meshes.visible(&frustum, seen).collect();
             let distance = |chunk: IVec3| {
                 let centre = (chunk.as_vec3() + 0.5) * CHUNK_SIZE as f32;
                 centre.distance_squared(camera.position)
@@ -325,8 +336,9 @@ impl Renderer {
             pass.set_pipeline(&self.water_pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
-            for (_, mesh) in water {
+            for (chunk, mesh) in water {
                 draw_chunk(&mut pass, mesh);
+                drawn_chunks.insert(chunk);
             }
         }
         self.post.draw(&mut encoder, &view);
@@ -335,10 +347,21 @@ impl Renderer {
         // one frame's GPU work with the next frame's CPU work, which costs nothing while vsync
         // paces the frames. A failed wait means a lost device, which the next frame reports.
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-        let draw = draw_start.elapsed();
+        let time = draw_start.elapsed();
         self.queue.present(frame);
-        Some(draw)
+        Some(Drawn {
+            time,
+            chunks: drawn_chunks.len(),
+        })
     }
+}
+
+/// What a frame drew.
+pub struct Drawn {
+    /// How long drawing took, CPU and GPU together.
+    pub time: Duration,
+    /// Chunks with terrain or water drawn.
+    pub chunks: usize,
 }
 
 fn draw_chunk(pass: &mut wgpu::RenderPass, mesh: &chunk_meshes::GpuMesh) {

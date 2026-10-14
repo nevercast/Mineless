@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use glam::IVec3;
 use wgpu::util::DeviceExt;
 
-use sim::world::CHUNK_SIZE;
+use sim::world::{CHUNK_SIZE, ChunkSet};
 
 use super::camera::Frustum;
 use crate::mesher::Mesh;
@@ -50,11 +50,12 @@ impl ChunkMeshes {
         self.meshes.insert(chunk, gpu_mesh);
     }
 
-    /// Meshes of the chunks that might be on screen, with their chunk coordinates.
-    pub fn visible<'a>(&'a self, frustum: &'a Frustum) -> impl Iterator<Item = (IVec3, &'a GpuMesh)> {
-        self.meshes.iter().filter_map(|(&chunk, mesh)| {
-            let min = (chunk * CHUNK_SIZE as i32).as_vec3();
-            frustum.intersects_box(min, min + CHUNK_SIZE as f32).then_some((chunk, mesh))
+    /// Meshes of the chunks that might be on screen, with their chunk coordinates: those in the
+    /// frustum, and in `seen` too if it is given.
+    pub fn visible<'a>(&'a self, frustum: &'a Frustum, seen: Option<&'a ChunkSet>) -> impl Iterator<Item = (IVec3, &'a GpuMesh)> {
+        self.meshes.iter().filter_map(move |(&chunk, mesh)| {
+            let in_view = seen.is_none_or(|seen| seen.contains(&chunk)) && frustum.contains_chunk(chunk);
+            in_view.then_some((chunk, mesh))
         })
     }
 }

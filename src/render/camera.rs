@@ -1,5 +1,6 @@
 use glam::camera::rh::{proj::directx, view};
-use glam::{Mat4, Vec3, Vec4};
+use glam::{IVec3, Mat4, Vec3, Vec4};
+use sim::world::CHUNK_SIZE;
 
 /// A free camera described by where it is and which way it faces.
 pub struct Camera {
@@ -59,6 +60,12 @@ impl Frustum {
             let corner = Vec3::select(normal.cmpge(Vec3::ZERO), max, min);
             normal.dot(corner) + plane.w >= 0.0
         })
+    }
+
+    /// Whether any of the chunk at chunk coordinate `chunk` might be in view.
+    pub fn contains_chunk(&self, chunk: IVec3) -> bool {
+        let min = (chunk * CHUNK_SIZE as i32).as_vec3();
+        self.intersects_box(min, min + CHUNK_SIZE as f32)
     }
 }
 
