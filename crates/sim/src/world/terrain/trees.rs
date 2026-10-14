@@ -4,7 +4,8 @@
 
 use glam::{IVec2, IVec3, Vec3Swizzles};
 
-use super::{Biome, Block, Chunk, Extent, Neighbourhood, SEA_LEVEL, SIZE, Surface, hash};
+use super::noise::hash;
+use super::{Biome, Block, Chunk, Extent, Neighbourhood, SEA_LEVEL, SIZE, Surface};
 use crate::world::Axis;
 
 /// Blocks along each side of a grid cell holding one tree candidate.

@@ -8,7 +8,7 @@ pub struct Camera {
     pub yaw: f32,
     /// Radians above the horizon.
     pub pitch: f32,
-    pub fov_y_radians: f32,
+    fov_y_radians: f32,
 }
 
 impl Camera {
@@ -22,7 +22,7 @@ impl Camera {
         }
     }
 
-    pub fn forward(&self) -> Vec3 {
+    fn forward(&self) -> Vec3 {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
         Vec3::new(-sin_yaw * cos_pitch, sin_pitch, -cos_yaw * cos_pitch)

@@ -10,9 +10,9 @@ use crate::world::World;
 const EPSILON: f32 = 1e-4;
 
 #[derive(Clone, Copy, Debug)]
-pub struct Aabb {
-    pub min: Vec3,
-    pub max: Vec3,
+struct Aabb {
+    min: Vec3,
+    max: Vec3,
 }
 
 impl Aabb {
@@ -50,7 +50,7 @@ pub struct Body {
 }
 
 impl Body {
-    pub fn aabb(&self) -> Aabb {
+    fn aabb(&self) -> Aabb {
         let half = Vec3::new(self.half_width, 0.0, self.half_width);
         Aabb {
             min: self.position - half,

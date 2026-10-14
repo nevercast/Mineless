@@ -9,10 +9,14 @@ use std::time::{Duration, Instant};
 
 use glam::{IVec3, Vec2, Vec3};
 
+mod noise;
+mod sea;
 mod trees;
 
 use super::chunk::Chunk;
 use super::{Block, CHUNK_SIZE, Extent, SIZE, World};
+use noise::{NOISE_BOUND, fractal, gradient_2d, gradient_3d, lerp, smoothstep};
+use sea::SeaFill;
 
 /// The height the terrain is shaped for. The world may be taller, leaving air above it.
 pub const HEIGHT: i32 = 128;
@@ -47,9 +51,6 @@ const DETAIL_SCALE: Vec3 = Vec3::new(48.0, 24.0, 48.0);
 /// uplands rise over a few tens of blocks.
 const RELIEF_START: f32 = 0.06;
 const RELIEF_FULL: f32 = 0.18;
-
-/// No gradient noise sample, or fractal sum of them, is further than this from 0.
-const NOISE_BOUND: f32 = 1.1;
 
 /// Rows at the bottom that are always solid, so nothing falls out of the world.
 const BEDROCK_ROWS: i32 = 4;
@@ -189,112 +190,6 @@ impl Generation {
                 return;
             }
         }
-    }
-}
-
-/// Floods the sea: air below `SEA_LEVEL` becomes water where it connects, through air below
-/// sea level, to the open surface of the sea. Sealed hollows stay dry. Reachability doesn't
-/// depend on the order cells are visited, so the result is the same however it is sliced.
-struct SeaFill {
-    min: IVec3,
-    /// Sea-level cells inside the world, the ones that can be open sea.
-    size: IVec3,
-    height: i32,
-    /// Columns checked for open sea so far.
-    columns: usize,
-    /// Water cells whose neighbours haven't been looked at. A cell turns to water as it joins,
-    /// so the world itself records which cells have been reached.
-    frontier: Vec<IVec3>,
-    /// Chunks looked at afterwards to store as one block if the water filled them.
-    compacted: usize,
-}
-
-impl SeaFill {
-    /// Cells flooded between checks of the time budget, which would otherwise cost about as
-    /// much as the flooding.
-    const BATCH: usize = 1024;
-
-    fn new(extent: Extent) -> Self {
-        let min = extent.min();
-        Self {
-            min,
-            size: extent.max().with_y(SEA_LEVEL) - min,
-            height: extent.height,
-            columns: 0,
-            frontier: Vec::new(),
-            compacted: 0,
-        }
-    }
-
-    fn column_count(&self) -> usize {
-        (self.size.x * self.size.z) as usize
-    }
-
-    fn done(&self, chunks: &[IVec3]) -> bool {
-        self.compacted == chunks.len()
-    }
-
-    fn progress(&self, chunks: &[IVec3]) -> f32 {
-        (self.columns + self.compacted) as f32 / (self.column_count() + chunks.len()) as f32
-    }
-
-    fn work(&mut self, world: &mut World, chunks: &[IVec3]) {
-        for _ in 0..Self::BATCH {
-            if let Some(position) = self.frontier.pop() {
-                for step in [
-                    IVec3::X,
-                    IVec3::NEG_X,
-                    IVec3::Y,
-                    IVec3::NEG_Y,
-                    IVec3::Z,
-                    IVec3::NEG_Z,
-                ] {
-                    self.flood(world, position + step);
-                }
-            } else if self.columns < self.column_count() {
-                let column = self.columns as i32;
-                let (x, z) = (column / self.size.z, column % self.size.z);
-                let surface = self.min + IVec3::new(x, SEA_LEVEL - 1, z);
-                self.columns += 1;
-                if self.open_to_sky(world, surface) {
-                    self.flood(world, surface);
-                }
-            } else if let Some(&position) = chunks.get(self.compacted) {
-                self.compacted += 1;
-                if position.y * SIZE < SEA_LEVEL
-                    && let Some(chunk) = world.chunks.get_mut(&position)
-                {
-                    chunk.compact();
-                }
-            } else {
-                return;
-            }
-        }
-    }
-
-    fn flood(&mut self, world: &mut World, position: IVec3) {
-        let local = position - self.min;
-        let inside = local.cmpge(IVec3::ZERO).all() && local.cmplt(self.size).all();
-        if inside && world.block(position) == Block::Air {
-            world.set_block(position, Block::Water);
-            self.frontier.push(position);
-        }
-    }
-
-    /// Whether nothing but air lies from `position` to the top of the world. Whole chunks of air
-    /// are skipped, since most of the sky is stored that way.
-    fn open_to_sky(&self, world: &World, mut position: IVec3) -> bool {
-        while position.y < self.height {
-            let chunk = position.div_euclid(IVec3::splat(SIZE));
-            if world.uniform_chunk(chunk) == Some(Block::Air) {
-                position.y = (chunk.y + 1) * SIZE;
-            } else if world.block(position) == Block::Air {
-                position.y += 1;
-            } else {
-                return false;
-            }
-        }
-        true
     }
 }
 
@@ -675,122 +570,6 @@ impl Fields {
         });
         (shape + self.detail * detail).clamp(-1.0, 1.0)
     }
-}
-
-/// `octaves` layers of noise, each twice as fine and half as strong as the last, scaled back to
-/// the range of one layer. `layer` gets the layer's frequency and a salt that makes the layers
-/// independent.
-fn fractal(octaves: u32, layer: impl Fn(f32, u32) -> f32) -> f32 {
-    let mut total = 0.0;
-    let mut strength = 1.0;
-    let mut strengths = 0.0;
-    let mut frequency = 1.0;
-    for octave in 0..octaves {
-        total += strength * layer(frequency, octave.wrapping_mul(0x68e3_1da4));
-        strengths += strength;
-        strength *= 0.5;
-        frequency *= 2.0;
-    }
-    total / strengths
-}
-
-/// Gradient noise in about `-1..=1`: a hashed gradient at each lattice corner, dotted with the
-/// offset to the point and blended with a smooth fade. Plain arithmetic only, so every platform
-/// generates the same world.
-fn gradient_2d(seed: u32, point: Vec2) -> f32 {
-    let cell = point.floor();
-    let (x, z) = (cell.x as i32, cell.y as i32);
-    let t = point - cell;
-    let corner = |dx: i32, dz: i32| {
-        let offset = t - Vec2::new(dx as f32, dz as f32);
-        let (gx, gz) = match hash(seed, x + dx, 0, z + dz) & 7 {
-            0 => (1.0, 1.0),
-            1 => (-1.0, 1.0),
-            2 => (1.0, -1.0),
-            3 => (-1.0, -1.0),
-            4 => (1.0, 0.0),
-            5 => (-1.0, 0.0),
-            6 => (0.0, 1.0),
-            _ => (0.0, -1.0),
-        };
-        gx * offset.x + gz * offset.y
-    };
-    let (fx, fz) = (fade(t.x), fade(t.y));
-    lerp(
-        lerp(corner(0, 0), corner(1, 0), fx),
-        lerp(corner(0, 1), corner(1, 1), fx),
-        fz,
-    )
-}
-
-/// 3D gradient noise in about `-1..=1`, with gradients towards the twelve edges of a cube.
-fn gradient_3d(seed: u32, point: Vec3) -> f32 {
-    let cell = point.floor();
-    let base = cell.as_ivec3();
-    let t = point - cell;
-    let corner = |d: IVec3| {
-        let o = t - d.as_vec3();
-        let p = base + d;
-        match hash(seed, p.x, p.y, p.z) % 12 {
-            0 => o.x + o.y,
-            1 => -o.x + o.y,
-            2 => o.x - o.y,
-            3 => -o.x - o.y,
-            4 => o.x + o.z,
-            5 => -o.x + o.z,
-            6 => o.x - o.z,
-            7 => -o.x - o.z,
-            8 => o.y + o.z,
-            9 => -o.y + o.z,
-            10 => o.y - o.z,
-            _ => -o.y - o.z,
-        }
-    };
-    let f = Vec3::new(fade(t.x), fade(t.y), fade(t.z));
-    let plane = |z: i32| {
-        lerp(
-            lerp(
-                corner(IVec3::new(0, 0, z)),
-                corner(IVec3::new(1, 0, z)),
-                f.x,
-            ),
-            lerp(
-                corner(IVec3::new(0, 1, z)),
-                corner(IVec3::new(1, 1, z)),
-                f.x,
-            ),
-            f.y,
-        )
-    };
-    lerp(plane(0), plane(1), f.z)
-}
-
-/// An integer hash of a lattice point, so every platform agrees.
-fn hash(seed: u32, x: i32, y: i32, z: i32) -> u32 {
-    let mut hash = seed
-        ^ (x as u32).wrapping_mul(0x27d4_eb2d)
-        ^ (y as u32).wrapping_mul(0x9e37_79b1).rotate_left(8)
-        ^ (z as u32).wrapping_mul(0x1656_67b1).rotate_left(16);
-    hash ^= hash >> 15;
-    hash = hash.wrapping_mul(0x2c1b_3c6d);
-    hash ^= hash >> 12;
-    hash = hash.wrapping_mul(0x297a_2d39);
-    hash ^= hash >> 15;
-    hash
-}
-
-/// Eases lattice blending so the noise has no visible creases at cell edges.
-fn fade(t: f32) -> f32 {
-    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
-}
-
-fn lerp(from: f32, to: f32, t: f32) -> f32 {
-    from + (to - from) * t
-}
-
-fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
-    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 #[cfg(test)]
@@ -1197,101 +976,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sea_fills_open_water_and_what_connects_to_it() {
-        let extent = Extent {
-            half_width: 16,
-            height: 4 * SIZE,
-        };
-        let mut world = World::default();
-        for position in extent.chunk_positions() {
-            world.insert(position, Chunk::empty());
-        }
-        let solid_below = SEA_LEVEL + 3;
-        for x in -16..16 {
-            for z in -16..16 {
-                for y in 0..solid_below {
-                    world.set_block(IVec3::new(x, y, z), Block::Stone);
-                }
-            }
-        }
-        let mut dig = |from: IVec3, to: IVec3| {
-            for x in from.x..=to.x {
-                for y in from.y..=to.y {
-                    for z in from.z..=to.z {
-                        world.set_block(IVec3::new(x, y, z), Block::Air);
-                    }
-                }
-            }
-        };
-        // An open basin, a hollow reaching x = 0 joined to it by a one-block tunnel, and a sealed
-        // hollow.
-        dig(
-            IVec3::new(-12, 30, -12),
-            IVec3::new(-7, solid_below - 1, -7),
-        );
-        dig(IVec3::new(-6, 32, -10), IVec3::new(-3, 32, -10));
-        dig(IVec3::new(-2, 30, -12), IVec3::new(0, 33, -8));
-        dig(IVec3::new(6, 30, 6), IVec3::new(9, 33, 9));
-        let chunks: Vec<IVec3> = extent.chunk_positions().collect();
-        let mut sea = SeaFill::new(extent);
-        while !sea.done(&chunks) {
-            sea.work(&mut world, &chunks);
-        }
-
-        let at = |x, y, z| world.block(IVec3::new(x, y, z));
-        for y in 30..solid_below {
-            let expected = if y < SEA_LEVEL {
-                Block::Water
-            } else {
-                Block::Air
-            };
-            assert_eq!(at(-10, y, -10), expected, "basin at {y}");
-        }
-        assert_eq!(at(-4, 32, -10), Block::Water);
-        assert_eq!(at(0, 30, -11), Block::Water);
-        assert_eq!(at(7, 31, 7), Block::Air);
-    }
-
-    #[test]
-    fn generated_sea_is_flooded_and_sealed_off() {
-        let extent = Extent {
-            half_width: 48,
-            height: HEIGHT,
-        };
-        let world = generate(extent, 6);
-        let (min, max) = (extent.min(), extent.max());
-        let mut water = 0;
-        for x in min.x..max.x {
-            for z in min.z..max.z {
-                for y in 0..HEIGHT {
-                    let position = IVec3::new(x, y, z);
-                    if world.block(position) != Block::Water {
-                        continue;
-                    }
-                    water += 1;
-                    assert!(y < SEA_LEVEL, "water at {position}");
-                    for step in [
-                        IVec3::X,
-                        IVec3::NEG_X,
-                        IVec3::Y,
-                        IVec3::NEG_Y,
-                        IVec3::Z,
-                        IVec3::NEG_Z,
-                    ] {
-                        let next = position + step;
-                        let open = next.y < SEA_LEVEL && world.block(next) == Block::Air;
-                        assert!(
-                            !open || !extent.contains(next),
-                            "air beside water at {next}"
-                        );
-                    }
-                }
-            }
-        }
-        assert!(water > 0);
-    }
-
     /// The surfaces of every column in the chunk columns from `first` to `last`, inclusive.
     fn surfaces(seed: u32, first: IVec2, last: IVec2) -> Vec<(Surface, Column)> {
         let mut found = Vec::new();
@@ -1391,17 +1075,6 @@ mod tests {
                 if ground(next) && reached.insert(next) {
                     frontier.push(next);
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn noise_stays_near_unit_range() {
-        for x in -40..40 {
-            for z in -40..40 {
-                let point = Vec2::new(x as f32, z as f32) * 0.37;
-                assert!(gradient_2d(3, point).abs() <= NOISE_BOUND);
-                assert!(gradient_3d(3, point.extend(z as f32 * 0.21)).abs() <= NOISE_BOUND);
             }
         }
     }

@@ -79,10 +79,6 @@ impl World {
         self.chunks.insert(position, chunk);
     }
 
-    pub fn chunk_positions(&self) -> impl Iterator<Item = IVec3> + '_ {
-        self.chunks.keys().copied()
-    }
-
     /// The block at a world position; unloaded space is air.
     pub fn block(&self, position: IVec3) -> Block {
         let (chunk, local) = split(position);

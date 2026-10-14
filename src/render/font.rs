@@ -3,7 +3,7 @@
 //! below it for descenders.
 
 pub const GLYPH_WIDTH: usize = 5;
-pub const GLYPH_HEIGHT: usize = 9;
+const GLYPH_HEIGHT: usize = 9;
 
 /// The bitmap for `character`, one row per byte from the top with the leftmost pixel in the
 /// highest of the five low bits, or `None` outside printable ASCII.

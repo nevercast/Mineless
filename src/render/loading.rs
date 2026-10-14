@@ -16,7 +16,7 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
 const TEXT: [f32; 3] = [0.85, 0.88, 0.92];
 const BAR_TRACK: [f32; 3] = [0.12, 0.15, 0.2];
 const BAR_FILL: [f32; 3] = [0.35, 0.8, 1.0];
-pub const HEADING: &str = "Generating terrain";
+const HEADING: &str = "Generating terrain";
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
