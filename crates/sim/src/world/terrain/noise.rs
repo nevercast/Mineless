@@ -27,9 +27,8 @@ pub(super) fn fractal(octaves: u32, layer: impl Fn(f32, u32) -> f32) -> f32 {
 /// offset to the point and blended with a smooth fade. Plain arithmetic only, so every platform
 /// generates the same world.
 pub(super) fn gradient_2d(seed: u32, point: Vec2) -> f32 {
-    let cell = point.floor();
-    let (x, z) = (cell.x as i32, cell.y as i32);
-    let t = point - cell;
+    let (x, z) = (floor(point.x), floor(point.y));
+    let t = point - Vec2::new(x as f32, z as f32);
     let corner = |dx: i32, dz: i32| {
         let offset = t - Vec2::new(dx as f32, dz as f32);
         let (gx, gz) = match hash(seed, x + dx, 0, z + dz) & 7 {
@@ -54,9 +53,8 @@ pub(super) fn gradient_2d(seed: u32, point: Vec2) -> f32 {
 
 /// 3D gradient noise in about `-1..=1`, with gradients towards the twelve edges of a cube.
 pub(super) fn gradient_3d(seed: u32, point: Vec3) -> f32 {
-    let cell = point.floor();
-    let base = cell.as_ivec3();
-    let t = point - cell;
+    let base = IVec3::new(floor(point.x), floor(point.y), floor(point.z));
+    let t = point - base.as_vec3();
     let corner = |d: IVec3| {
         let o = t - d.as_vec3();
         let p = base + d;
@@ -108,6 +106,18 @@ pub(super) fn hash(seed: u32, x: i32, y: i32, z: i32) -> u32 {
     hash
 }
 
+/// The largest whole number no greater than `x`, for any `x` in `i32` range. `f32::floor`
+/// becomes a library call on baseline x86-64, which has no rounding instruction, and noise floors
+/// several coordinates per sample.
+fn floor(x: f32) -> i32 {
+    let truncated = x as i32;
+    if (truncated as f32) > x {
+        truncated - 1
+    } else {
+        truncated
+    }
+}
+
 /// Eases lattice blending so the noise has no visible creases at cell edges.
 fn fade(t: f32) -> f32 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
@@ -125,6 +135,25 @@ pub(super) fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floor_matches_the_library_floor() {
+        for x in [
+            -2.5,
+            -2.0,
+            -1.0001,
+            -0.5,
+            -0.0,
+            0.0,
+            0.25,
+            1.0,
+            1.9999,
+            1e6 + 0.5,
+            -1e6 - 0.5,
+        ] {
+            assert_eq!(floor(x), x.floor() as i32, "{x}");
+        }
+    }
 
     #[test]
     fn noise_stays_near_unit_range() {

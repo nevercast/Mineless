@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use glam::{IVec2, IVec3, Vec2, Vec3};
+use glam::{IVec2, IVec3, Vec2, Vec3, Vec3Swizzles};
 
 mod noise;
 mod sea;
@@ -490,11 +490,10 @@ impl Lattice {
 
     /// The density profile of one column, interpolated from the four lattice columns around it.
     fn column(&self, x: i32, z: i32) -> Column {
-        let local = Vec2::new((x - self.origin.x) as f32, (z - self.origin.z) as f32)
-            / Vec2::new(LATTICE_STEP.x as f32, LATTICE_STEP.z as f32);
-        let cell = local.floor();
-        let t = local - cell;
-        let (i, k) = (cell.x as i32, cell.y as i32);
+        let local = IVec2::new(x - self.origin.x, z - self.origin.z);
+        let step = LATTICE_STEP.xz();
+        let t = local.rem_euclid(step).as_vec2() / step.as_vec2();
+        let IVec2 { x: i, y: k } = local.div_euclid(step);
         debug_assert!(i >= 0 && k >= 0 && i + 1 < self.across && k + 1 < self.across);
         let corners = [(i, k), (i + 1, k), (i, k + 1), (i + 1, k + 1)]
             .map(|(i, k)| (i * self.across + k) as usize);
@@ -611,7 +610,6 @@ impl Fields {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec3Swizzles;
 
     /// Small enough to generate quickly, taller than the terrain, and not a whole number of
     /// chunks across, so the border stands partway into the outermost chunks.
