@@ -167,10 +167,11 @@ impl ApplicationHandler for App {
                 let alpha = self.unsimulated * TICK_RATE;
                 let avatars: Vec<Avatar> = self.players.iter().map(|p| p.avatar(alpha)).collect();
                 let day_fraction = ((self.ticks % DAY_TICKS) as f32 + alpha) / DAY_TICKS as f32;
-                // Inside rock the terrain is drawn cut away. The walk assumes the camera starts in open
-                // space, so culling waits until it is back in the open.
-                let cutaway = self.world.block(self.camera.position.floor().as_ivec3()).is_solid();
-                let culling = self.culling && !cutaway;
+                // From inside rock the back faces of the rock are culled, so it is see-through and every cave around shows. The
+                // walk starts at the camera's chunk as open space and would stop at the solid chunks round it, so it waits until
+                // the camera is back in the open.
+                let in_rock = self.world.block(self.camera.position.floor().as_ivec3()).is_solid();
+                let culling = self.culling && !in_rock;
                 let walk_start = Instant::now();
                 let seen = culling.then(|| seen_chunks(&self.camera, &renderer.frustum(&self.camera), &self.meshed));
                 let walk_seconds = walk_start.elapsed().as_secs_f32();
@@ -180,7 +181,6 @@ impl ApplicationHandler for App {
                     day_fraction * DAY_TICKS as f32 / TICK_RATE,
                     &avatars,
                     seen.as_ref(),
-                    cutaway,
                 );
                 let timings = &mut self.timings;
                 timings.frames += 1;
