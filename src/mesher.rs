@@ -152,18 +152,11 @@ struct Snapshot {
 impl Snapshot {
     fn new(world: &World, chunk: IVec3) -> Self {
         let origin = chunk * CHUNK_SIZE as i32 - IVec3::ONE;
-        let mut blocks = Vec::with_capacity((PADDED * PADDED * PADDED) as usize);
-        for y in 0..PADDED {
-            for z in 0..PADDED {
-                for x in 0..PADDED {
-                    let block = world.block(origin + IVec3::new(x, y, z));
-                    // The border is drawn on its own, so terrain meets it as it would open air.
-                    blocks.push(if block == Block::WorldBorder {
-                        Block::Air
-                    } else {
-                        block
-                    });
-                }
+        let mut blocks = world.blocks_in(origin, origin + PADDED);
+        // The border is drawn on its own, so terrain meets it as it would open air.
+        for block in &mut blocks {
+            if *block == Block::WorldBorder {
+                *block = Block::Air;
             }
         }
         Self { origin, blocks }

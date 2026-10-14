@@ -97,6 +97,40 @@ impl World {
             .map_or(Block::Air, |chunk| chunk.get(local.x, local.y, local.z))
     }
 
+    /// The blocks of the box from `min` up to but not including `max`, layer by layer from the
+    /// bottom, each layer row by row along z, each row along x. Unloaded space is air. Each chunk
+    /// is looked up once rather than once per block.
+    pub fn blocks_in(&self, min: IVec3, max: IVec3) -> Vec<Block> {
+        let size = max - min;
+        let mut blocks = vec![Block::Air; (size.x * size.y * size.z) as usize];
+        let first = min.div_euclid(IVec3::splat(SIZE));
+        let last = (max - 1).div_euclid(IVec3::splat(SIZE));
+        for cx in first.x..=last.x {
+            for cy in first.y..=last.y {
+                for cz in first.z..=last.z {
+                    let position = IVec3::new(cx, cy, cz);
+                    let Some(chunk) = self.chunks.get(&position) else {
+                        continue;
+                    };
+                    let origin = position * SIZE;
+                    let (low, high) = (origin.max(min), (origin + SIZE).min(max));
+                    for y in low.y..high.y {
+                        for z in low.z..high.z {
+                            for x in low.x..high.x {
+                                let (cell, local) =
+                                    (IVec3::new(x, y, z) - min, IVec3::new(x, y, z) - origin);
+                                let local = local.as_usizevec3();
+                                blocks[((cell.y * size.z + cell.z) * size.x + cell.x) as usize] =
+                                    chunk.get(local.x, local.y, local.z);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        blocks
+    }
+
     /// The height just above the highest solid block in the column at `x`, `z`, where a player
     /// can stand; 0 if the column is empty.
     pub fn column_top(&self, x: i32, z: i32) -> i32 {
@@ -165,6 +199,44 @@ mod tests {
         assert_eq!(world.block(IVec3::new(-1, 5, 0)), Block::Air);
         assert_eq!(world.block(IVec3::new(0, 5, -1)), Block::Air);
         assert_eq!(world.column_top(-2, -2), 0);
+    }
+
+    #[test]
+    fn a_box_of_blocks_reads_the_same_as_each_block() {
+        let mut world = World::default();
+        for position in [
+            IVec3::new(-1, 0, -1),
+            IVec3::new(0, 0, -1),
+            IVec3::new(-1, 1, 0),
+        ] {
+            world.insert(position, Chunk::empty());
+        }
+        world.insert(IVec3::new(0, 1, 0), Chunk::Uniform(Block::Stone));
+        for (i, position) in [
+            IVec3::new(-3, 5, -2),
+            IVec3::new(2, 7, -9),
+            IVec3::new(-1, 20, 3),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let block = [Block::Dirt, Block::Sand, Block::Gravel][i];
+            world.set_block(position, block);
+        }
+        let (min, max) = (IVec3::new(-5, 3, -10), IVec3::new(4, 22, 6));
+        let blocks = world.blocks_in(min, max);
+        let size = max - min;
+        assert_eq!(blocks.len(), (size.x * size.y * size.z) as usize);
+        let mut index = 0;
+        for y in min.y..max.y {
+            for z in min.z..max.z {
+                for x in min.x..max.x {
+                    let position = IVec3::new(x, y, z);
+                    assert_eq!(blocks[index], world.block(position), "{position}");
+                    index += 1;
+                }
+            }
+        }
     }
 
     #[test]
