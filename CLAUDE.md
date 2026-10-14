@@ -10,6 +10,8 @@ mostly spectates.
   threads/async, public data formats, and anything that shapes the agent API.
 - Josh approves every new dependency. Ask before adding one to Cargo.toml.
 - Comments explain why, never what. No commented-out code, no TODOs without an owner.
+- Wrap new comments at 140 columns. Leave existing comments as they are: stable rustfmt cannot
+  rewrap them.
 - No markdown docs in the repo beyond this file, REVIEW.md and README.
 - Must build and run on Windows and Linux. `cargo fmt --all`, `cargo clippy --workspace
   --all-targets` and `cargo test --workspace` must pass with warnings as errors before pushing.
