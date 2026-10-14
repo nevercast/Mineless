@@ -205,9 +205,9 @@ impl Generation {
 fn generate_column(seed: u32, column: IVec2, extent: Extent) -> Vec<Chunk> {
     let origin = IVec3::new(column.x, 0, column.y) * SIZE;
     let columns = Neighbourhood::around(seed, origin);
-    let surfaces: Vec<Surface> = (0..SIZE)
+    let blocks: Vec<[Block; HEIGHT as usize]> = (0..SIZE)
         .flat_map(|i| (0..SIZE).map(move |k| (origin.x + i, origin.z + k)))
-        .map(|(x, z)| Surface::at(seed, x, z, &columns))
+        .map(|(x, z)| Surface::at(seed, x, z, &columns).blocks(columns.column(x, z)))
         .collect();
     let trees = trees::reaching(seed, origin, &columns, extent);
     extent
@@ -224,13 +224,12 @@ fn generate_column(seed: u32, column: IVec2, extent: Extent) -> Vec<Chunk> {
                     if !extent.contains_column(x, z) || (!on_edge && origin.y >= HEIGHT) {
                         continue;
                     }
-                    let surface = &surfaces[local_x * CHUNK_SIZE + local_z];
-                    let column = columns.column(x, z);
+                    let column = &blocks[local_x * CHUNK_SIZE + local_z];
                     for local_y in 0..CHUNK_SIZE {
                         let block = if on_edge {
                             Block::WorldBorder
                         } else {
-                            surface.block(column, origin.y + local_y as i32)
+                            column[origin.y as usize + local_y]
                         };
                         if block != Block::Air {
                             chunk.set(local_x, local_y, local_z, block);
@@ -393,6 +392,27 @@ impl Surface {
         };
         let (top, beneath) = self.run_blocks(y + depth);
         if depth == 0 { top } else { beneath }
+    }
+
+    /// Every block of the column from the bottom of the world to the terrain height, as `block`
+    /// gives them. Walking down from the top tracks each run's exposed top as it goes, rather than
+    /// looking up for it from every cell.
+    fn blocks(&self, column: &Column) -> [Block; HEIGHT as usize] {
+        let mut blocks = [Block::Air; HEIGHT as usize];
+        let mut exposed_top = None;
+        for (y, block) in (0..HEIGHT).zip(&mut blocks).rev() {
+            if !column.solid(y) {
+                exposed_top = None;
+                continue;
+            }
+            let top = *exposed_top.get_or_insert(y);
+            *block = match top - y {
+                0 => self.run_blocks(top).0,
+                depth if depth < self.run => self.run_blocks(top).1,
+                _ => Block::Stone,
+            };
+        }
+        blocks
     }
 
     /// The top block and the blocks beneath it for a surface whose exposed top is at `y`.
@@ -858,6 +878,26 @@ mod tests {
                         Biome::Beach => assert!((SEA_LEVEL - 1..=SEA_LEVEL + 2).contains(&top)),
                         _ => assert!(top >= SEA_LEVEL - 1),
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_whole_column_of_blocks_matches_each_block_alone() {
+        for seed in 0..4 {
+            let origin = IVec3::new(-16, 0, 32);
+            let columns = Neighbourhood::around(seed, origin);
+            for (x, z) in (-16..0).flat_map(|x| (32..48).map(move |z| (x, z))) {
+                let surface = Surface::at(seed, x, z, &columns);
+                let column = columns.column(x, z);
+                let blocks = surface.blocks(column);
+                for y in 0..HEIGHT {
+                    assert_eq!(
+                        blocks[y as usize],
+                        surface.block(column, y),
+                        "{x}, {y}, {z}"
+                    );
                 }
             }
         }
