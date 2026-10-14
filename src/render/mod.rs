@@ -104,9 +104,7 @@ pub struct Renderer {
 impl Renderer {
     /// `world` is how far the world reaches, for the border round its edge.
     pub async fn new(window: Arc<Window>, world: Extent) -> Self {
-        let instance = wgpu::Instance::new(
-            wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())),
-        );
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())));
         let size = window.inner_size();
         let surface = instance.create_surface(window).expect("create surface");
         let adapter = instance
@@ -242,33 +240,21 @@ impl Renderer {
         let Some(frame) = self.acquire_frame() else {
             return;
         };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let size = Vec2::new(self.config.width as f32, self.config.height as f32);
-        self.loading
-            .draw(&self.device, &mut encoder, &view, size, progress, detail);
+        self.loading.draw(&self.device, &mut encoder, &view, size, progress, detail);
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
     }
 
     /// `time` is seconds since midnight, for animation. Returns how long the frame took to draw,
     /// CPU and GPU together, or `None` if there was no frame to draw into.
-    pub fn render(
-        &mut self,
-        camera: &Camera,
-        sky: &Sky,
-        time: f32,
-        avatars: &[Avatar],
-    ) -> Option<Duration> {
+    pub fn render(&mut self, camera: &Camera, sky: &Sky, time: f32, avatars: &[Avatar]) -> Option<Duration> {
         // Acquiring the frame is where vsync blocks, so the draw time starts after it.
         let frame = self.acquire_frame()?;
         let draw_start = Instant::now();
-        let view_projection =
-            camera.view_projection(self.config.width as f32 / self.config.height as f32);
+        let view_projection = camera.view_projection(self.config.width as f32 / self.config.height as f32);
         self.queue.write_buffer(
             &self.frame_buffer,
             0,
@@ -288,12 +274,8 @@ impl Renderer {
         );
         self.avatar.prepare(&self.device, &self.queue, avatars);
 
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("main"),
@@ -389,11 +371,7 @@ fn frame_shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderM
     );
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(
-            [&constants, include_str!("frame.wgsl"), body]
-                .concat()
-                .into(),
-        ),
+        source: wgpu::ShaderSource::Wgsl([&constants, include_str!("frame.wgsl"), body].concat().into()),
     })
 }
 
@@ -464,10 +442,7 @@ fn scene_pipeline(
 }
 
 /// A filterable float texture read by fragment shaders.
-fn texture_entry(
-    binding: u32,
-    view_dimension: wgpu::TextureViewDimension,
-) -> wgpu::BindGroupLayoutEntry {
+fn texture_entry(binding: u32, view_dimension: wgpu::TextureViewDimension) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -489,10 +464,7 @@ fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn create_depth_view(
-    device: &wgpu::Device,
-    config: &wgpu::SurfaceConfiguration,
-) -> wgpu::TextureView {
+fn create_depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {
             label: Some("depth"),

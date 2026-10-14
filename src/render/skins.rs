@@ -75,16 +75,10 @@ impl SkinTextures {
         // Nearest filtering keeps the skins' texels crisp; avatars are small enough on screen that
         // they don't need mips yet.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
-        let texture_entry =
-            |binding| super::texture_entry(binding, wgpu::TextureViewDimension::D2Array);
+        let texture_entry = |binding| super::texture_entry(binding, wgpu::TextureViewDimension::D2Array);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("skins"),
-            entries: &[
-                texture_entry(0),
-                texture_entry(1),
-                texture_entry(2),
-                super::sampler_entry(3),
-            ],
+            entries: &[texture_entry(0), texture_entry(1), texture_entry(2), super::sampler_entry(3)],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("skins"),
@@ -114,8 +108,7 @@ impl SkinTextures {
 
 /// Decodes one skin image at `SKIN_SIZE`, scaling smaller skins up texel for texel.
 fn decode(skin: Skin, png: &[u8]) -> image::DynamicImage {
-    let image = image::load_from_memory_with_format(png, ImageFormat::Png)
-        .unwrap_or_else(|err| panic!("decode {skin:?} skin: {err}"));
+    let image = image::load_from_memory_with_format(png, ImageFormat::Png).unwrap_or_else(|err| panic!("decode {skin:?} skin: {err}"));
     assert!(
         image.width() == image.height() && SKIN_SIZE.is_multiple_of(image.width()),
         "{skin:?} skin must be square and divide {SKIN_SIZE}"
@@ -123,13 +116,7 @@ fn decode(skin: Skin, png: &[u8]) -> image::DynamicImage {
     image.resize_exact(SKIN_SIZE, SKIN_SIZE, FilterType::Nearest)
 }
 
-fn create_array(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    label: &str,
-    format: wgpu::TextureFormat,
-    texels: &[u8],
-) -> wgpu::TextureView {
+fn create_array(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, format: wgpu::TextureFormat, texels: &[u8]) -> wgpu::TextureView {
     device
         .create_texture_with_data(
             queue,

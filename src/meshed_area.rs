@@ -40,13 +40,7 @@ impl MeshedArea {
     /// Drops meshes that have fallen out of range of `camera`, then builds missing ones in range,
     /// nearest first, on a worker thread per core until `budget` has passed. Returns how many
     /// columns in range are still missing.
-    pub fn update(
-        &mut self,
-        world: &World,
-        renderer: &mut Renderer,
-        camera: Vec2,
-        budget: Duration,
-    ) -> usize {
+    pub fn update(&mut self, world: &World, renderer: &mut Renderer, camera: Vec2, budget: Duration) -> usize {
         let start = Instant::now();
         for column in self.drop_far(camera) {
             for chunk in self.chunks(column) {
@@ -71,13 +65,7 @@ impl MeshedArea {
     /// Meshes the chunks of `columns`, nearest first, until `budget` has passed since `start`;
     /// each worker finishes the column it is on, so at least one column is always built. The
     /// world is only read, so workers share it without locks.
-    fn build(
-        &self,
-        world: &World,
-        columns: &[IVec2],
-        start: Instant,
-        budget: Duration,
-    ) -> Vec<(IVec2, Vec<ChunkMesh>)> {
+    fn build(&self, world: &World, columns: &[IVec2], start: Instant, budget: Duration) -> Vec<(IVec2, Vec<ChunkMesh>)> {
         let next = AtomicUsize::new(0);
         let workers = thread::available_parallelism().map_or(1, NonZeroUsize::get);
         thread::scope(|scope| {
@@ -85,11 +73,8 @@ impl MeshedArea {
                 .map(|_| {
                     scope.spawn(|| {
                         let mut built = Vec::new();
-                        while let Some(&column) = columns.get(next.fetch_add(1, Ordering::Relaxed))
-                        {
-                            let meshes = self
-                                .chunks(column)
-                                .map(|chunk| mesher::build_chunk_mesh(world, chunk));
+                        while let Some(&column) = columns.get(next.fetch_add(1, Ordering::Relaxed)) {
+                            let meshes = self.chunks(column).map(|chunk| mesher::build_chunk_mesh(world, chunk));
                             built.push((column, meshes.collect()));
                             if start.elapsed() >= budget {
                                 break;
@@ -113,9 +98,7 @@ impl MeshedArea {
     }
 
     fn chunks(&self, column: IVec2) -> impl Iterator<Item = IVec3> + use<> {
-        self.levels
-            .clone()
-            .map(move |y| IVec3::new(column.x, y, column.y))
+        self.levels.clone().map(move |y| IVec3::new(column.x, y, column.y))
     }
 
     /// Forgets and returns the meshed columns now too far from `camera` to keep.

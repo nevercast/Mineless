@@ -31,11 +31,7 @@ struct Targets {
 }
 
 impl PostProcess {
-    pub fn new(
-        device: &wgpu::Device,
-        output_format: wgpu::TextureFormat,
-        size: (u32, u32),
-    ) -> Self {
+    pub fn new(device: &wgpu::Device, output_format: wgpu::TextureFormat, size: (u32, u32)) -> Self {
         let texture_entry = |binding| super::texture_entry(binding, wgpu::TextureViewDimension::D2);
         let sampler_entry = super::sampler_entry(1);
         let blur_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -118,13 +114,7 @@ impl PostProcess {
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, size: (u32, u32)) {
-        self.targets = Targets::new(
-            device,
-            &self.blur_layout,
-            &self.composite_layout,
-            &self.sampler,
-            size,
-        );
+        self.targets = Targets::new(device, &self.blur_layout, &self.composite_layout, &self.sampler, size);
     }
 
     /// The HDR colour target the scene draws into.
@@ -143,13 +133,7 @@ impl PostProcess {
             fullscreen(encoder, level, CLEAR, &self.downsample, bind_group);
         }
         for (level, bind_group) in targets.bloom.iter().zip(&targets.upsample).rev() {
-            fullscreen(
-                encoder,
-                level,
-                wgpu::LoadOp::Load,
-                &self.upsample,
-                bind_group,
-            );
+            fullscreen(encoder, level, wgpu::LoadOp::Load, &self.upsample, bind_group);
         }
         fullscreen(encoder, output, CLEAR, &self.composite, &targets.composite);
     }
@@ -175,15 +159,12 @@ impl Targets {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: HDR_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
         };
-        let scene = render_target("scene", width, height, 1)
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let emissive = render_target("emissive", width, height, 1)
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let scene = render_target("scene", width, height, 1).create_view(&wgpu::TextureViewDescriptor::default());
+        let emissive = render_target("emissive", width, height, 1).create_view(&wgpu::TextureViewDescriptor::default());
 
         let (bloom_width, bloom_height) = ((width / 2).max(1), (height / 2).max(1));
         // A level can't be smaller than one texel.
@@ -221,10 +202,7 @@ impl Targets {
                 ],
             )
         };
-        let downsample = std::iter::once(&emissive)
-            .chain(&bloom[..bloom.len() - 1])
-            .map(blur)
-            .collect();
+        let downsample = std::iter::once(&emissive).chain(&bloom[..bloom.len() - 1]).map(blur).collect();
         let upsample = bloom[1..].iter().map(blur).collect();
         let composite = bind_group(
             composite_layout,

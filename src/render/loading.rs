@@ -135,20 +135,8 @@ fn layout(size: Vec2, progress: f32, detail: &str) -> Vec<(Vec2, Vec2, [f32; 3])
             BAR_FILL,
         ),
     ];
-    text(
-        &mut quads,
-        HEADING,
-        centre.y - bar_half.y - 12.0 * unit,
-        unit,
-        centre.x,
-    );
-    text(
-        &mut quads,
-        detail,
-        centre.y + bar_half.y + 3.0 * unit,
-        unit,
-        centre.x,
-    );
+    text(&mut quads, HEADING, centre.y - bar_half.y - 12.0 * unit, unit, centre.x);
+    text(&mut quads, detail, centre.y + bar_half.y + 3.0 * unit, unit, centre.x);
     quads
 }
 
@@ -164,10 +152,7 @@ fn text(quads: &mut Vec<(Vec2, Vec2, [f32; 3])>, line: &str, top: f32, unit: f32
         for (row, bits) in rows.iter().enumerate() {
             for column in 0..GLYPH_WIDTH {
                 if bits >> (GLYPH_WIDTH - 1 - column) & 1 == 1 {
-                    let min = Vec2::new(
-                        left + index as f32 * advance + column as f32 * unit,
-                        top + row as f32 * unit,
-                    );
+                    let min = Vec2::new(left + index as f32 * advance + column as f32 * unit, top + row as f32 * unit);
                     quads.push((min, min + unit, TEXT));
                 }
             }

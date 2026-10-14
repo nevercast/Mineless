@@ -44,11 +44,7 @@ pub(super) fn gradient_2d(seed: u32, point: Vec2) -> f32 {
         gx * offset.x + gz * offset.y
     };
     let (fx, fz) = (fade(t.x), fade(t.y));
-    lerp(
-        lerp(corner(0, 0), corner(1, 0), fx),
-        lerp(corner(0, 1), corner(1, 1), fx),
-        fz,
-    )
+    lerp(lerp(corner(0, 0), corner(1, 0), fx), lerp(corner(0, 1), corner(1, 1), fx), fz)
 }
 
 /// 3D gradient noise in about `-1..=1`, with gradients towards the twelve edges of a cube.
@@ -76,16 +72,8 @@ pub(super) fn gradient_3d(seed: u32, point: Vec3) -> f32 {
     let f = Vec3::new(fade(t.x), fade(t.y), fade(t.z));
     let plane = |z: i32| {
         lerp(
-            lerp(
-                corner(IVec3::new(0, 0, z)),
-                corner(IVec3::new(1, 0, z)),
-                f.x,
-            ),
-            lerp(
-                corner(IVec3::new(0, 1, z)),
-                corner(IVec3::new(1, 1, z)),
-                f.x,
-            ),
+            lerp(corner(IVec3::new(0, 0, z)), corner(IVec3::new(1, 0, z)), f.x),
+            lerp(corner(IVec3::new(0, 1, z)), corner(IVec3::new(1, 1, z)), f.x),
             f.y,
         )
     };
@@ -111,11 +99,7 @@ pub(super) fn hash(seed: u32, x: i32, y: i32, z: i32) -> u32 {
 /// several coordinates per sample.
 fn floor(x: f32) -> i32 {
     let truncated = x as i32;
-    if (truncated as f32) > x {
-        truncated - 1
-    } else {
-        truncated
-    }
+    if (truncated as f32) > x { truncated - 1 } else { truncated }
 }
 
 /// Eases lattice blending so the noise has no visible creases at cell edges.
@@ -138,19 +122,7 @@ mod tests {
 
     #[test]
     fn floor_matches_the_library_floor() {
-        for x in [
-            -2.5,
-            -2.0,
-            -1.0001,
-            -0.5,
-            -0.0,
-            0.0,
-            0.25,
-            1.0,
-            1.9999,
-            1e6 + 0.5,
-            -1e6 - 0.5,
-        ] {
+        for x in [-2.5, -2.0, -1.0001, -0.5, -0.0, 0.0, 0.25, 1.0, 1.9999, 1e6 + 0.5, -1e6 - 0.5] {
             assert_eq!(floor(x), x.floor() as i32, "{x}");
         }
     }

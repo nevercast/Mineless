@@ -54,14 +54,7 @@ impl SeaFill {
     pub(super) fn work(&mut self, world: &mut World, chunks: &[IVec3]) {
         for _ in 0..Self::BATCH {
             if let Some(position) = self.frontier.pop() {
-                for step in [
-                    IVec3::X,
-                    IVec3::NEG_X,
-                    IVec3::Y,
-                    IVec3::NEG_Y,
-                    IVec3::Z,
-                    IVec3::NEG_Z,
-                ] {
+                for step in [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z] {
                     self.flood(world, position + step);
                 }
             } else if self.columns < self.column_count() {
@@ -146,10 +139,7 @@ mod tests {
         };
         // An open basin, a hollow reaching x = 0 joined to it by a one-block tunnel, and a sealed
         // hollow.
-        dig(
-            IVec3::new(-12, 30, -12),
-            IVec3::new(-7, solid_below - 1, -7),
-        );
+        dig(IVec3::new(-12, 30, -12), IVec3::new(-7, solid_below - 1, -7));
         dig(IVec3::new(-6, 32, -10), IVec3::new(-3, 32, -10));
         dig(IVec3::new(-2, 30, -12), IVec3::new(0, 33, -8));
         dig(IVec3::new(6, 30, 6), IVec3::new(9, 33, 9));
@@ -161,11 +151,7 @@ mod tests {
 
         let at = |x, y, z| world.block(IVec3::new(x, y, z));
         for y in 30..solid_below {
-            let expected = if y < SEA_LEVEL {
-                Block::Water
-            } else {
-                Block::Air
-            };
+            let expected = if y < SEA_LEVEL { Block::Water } else { Block::Air };
             assert_eq!(at(-10, y, -10), expected, "basin at {y}");
         }
         assert_eq!(at(-4, 32, -10), Block::Water);
@@ -191,20 +177,10 @@ mod tests {
                     }
                     water += 1;
                     assert!(y < SEA_LEVEL, "water at {position}");
-                    for step in [
-                        IVec3::X,
-                        IVec3::NEG_X,
-                        IVec3::Y,
-                        IVec3::NEG_Y,
-                        IVec3::Z,
-                        IVec3::NEG_Z,
-                    ] {
+                    for step in [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z] {
                         let next = position + step;
                         let open = next.y < SEA_LEVEL && world.block(next) == Block::Air;
-                        assert!(
-                            !open || !extent.contains(next),
-                            "air beside water at {next}"
-                        );
+                        assert!(!open || !extent.contains(next), "air beside water at {next}");
                     }
                 }
             }

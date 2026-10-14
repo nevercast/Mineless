@@ -16,14 +16,7 @@ pub struct Vertex(u32);
 impl Vertex {
     fn new(position: IVec3, face: usize, corner: usize, occluders: usize, tile: Tile) -> Self {
         let [x, y, z] = position.as_uvec3().to_array();
-        Self(
-            x | y << 5
-                | z << 10
-                | (face as u32) << 15
-                | (corner as u32) << 18
-                | (occluders as u32) << 20
-                | (tile as u32) << 22,
-        )
+        Self(x | y << 5 | z << 10 | (face as u32) << 15 | (corner as u32) << 18 | (occluders as u32) << 20 | (tile as u32) << 22)
     }
 }
 
@@ -180,9 +173,7 @@ pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> ChunkMesh {
             .uniform_chunk(chunk)
             .is_some_and(|block| block.is_solid() && block != Block::WorldBorder)
     };
-    if world.uniform_chunk(chunk) == Some(Block::Air)
-        || buried(chunk) && FACES.iter().all(|face| buried(chunk + face.normal))
-    {
+    if world.uniform_chunk(chunk) == Some(Block::Air) || buried(chunk) && FACES.iter().all(|face| buried(chunk + face.normal)) {
         return ChunkMesh::default();
     }
     let blocks = Snapshot::new(world, chunk);
@@ -221,10 +212,7 @@ fn face_occlusion(blocks: &Snapshot, position: IVec3, face: &Face) -> [usize; 4]
         // Step towards the corner along each axis the face lies in (the ones the normal ignores).
         let toward = IVec3::from_array(corner.map(|c| 2 * c - 1));
         let mut sides = [IVec3::ZERO; 2];
-        for (side, axis) in sides
-            .iter_mut()
-            .zip((0..3).filter(|&a| face.normal[a] == 0))
-        {
+        for (side, axis) in sides.iter_mut().zip((0..3).filter(|&a| face.normal[a] == 0)) {
             side[axis] = toward[axis];
         }
         let (side_a, side_b) = (solid(sides[0]), solid(sides[1]));
@@ -238,21 +226,12 @@ fn face_occlusion(blocks: &Snapshot, position: IVec3, face: &Face) -> [usize; 4]
 
 /// `local` is the block's position inside its chunk. A `turned` face gives each corner the next
 /// corner's texture coordinates, which turns the texture without touching positions or AO.
-fn push_face(
-    mesh: &mut Mesh,
-    face: usize,
-    local: IVec3,
-    tile: Tile,
-    turned: bool,
-    occlusion: [usize; 4],
-) {
+fn push_face(mesh: &mut Mesh, face: usize, local: IVec3, tile: Tile, turned: bool, occlusion: [usize; 4]) {
     let base = u16::try_from(mesh.vertices.len()).expect("a chunk has at most 49,152 vertices");
-    for (corner_index, (corner, occluders)) in FACES[face].corners.iter().zip(occlusion).enumerate()
-    {
+    for (corner_index, (corner, occluders)) in FACES[face].corners.iter().zip(occlusion).enumerate() {
         let position = local + IVec3::from_array(*corner);
         let texture_corner = (corner_index + usize::from(turned)) % 4;
-        mesh.vertices
-            .push(Vertex::new(position, face, texture_corner, occluders, tile));
+        mesh.vertices.push(Vertex::new(position, face, texture_corner, occluders, tile));
     }
     // Split the quad along the diagonal whose ends are equally lit, otherwise the darkness
     // interpolates across the wrong triangle and shows a visible crease.
@@ -293,10 +272,7 @@ mod tests {
         // Two cells in a row, on stone: no face between them or on the stone, five each of the
         // rest, all looking into air.
         assert_eq!(faces.len(), 8);
-        assert_eq!(
-            faces.iter().filter(|&&normal| normal == IVec3::Y).count(),
-            2
-        );
+        assert_eq!(faces.iter().filter(|&&normal| normal == IVec3::Y).count(), 2);
         assert!(!faces.contains(&IVec3::NEG_Y));
         // The stone's tops under the water are still drawn, as opaque faces.
         assert_eq!(face_count(&world, IVec3::ZERO), 10);
@@ -321,10 +297,7 @@ mod tests {
     }
 
     fn texture_corners(mesh: &Mesh) -> Vec<u32> {
-        mesh.vertices
-            .iter()
-            .map(|Vertex(v)| (v >> 18) & 3)
-            .collect()
+        mesh.vertices.iter().map(|Vertex(v)| (v >> 18) & 3).collect()
     }
 
     #[test]
@@ -340,17 +313,9 @@ mod tests {
                 assert_eq!(Tile::for_face(block, face.normal), tile, "{block:?}");
             }
         }
-        for (axis, ends) in [
-            (Axis::X, IVec3::X),
-            (Axis::Y, IVec3::Y),
-            (Axis::Z, IVec3::Z),
-        ] {
+        for (axis, ends) in [(Axis::X, IVec3::X), (Axis::Y, IVec3::Y), (Axis::Z, IVec3::Z)] {
             for face in &FACES {
-                let expected = if face.normal.abs() == ends {
-                    Tile::OakLogTop
-                } else {
-                    Tile::OakLog
-                };
+                let expected = if face.normal.abs() == ends { Tile::OakLogTop } else { Tile::OakLog };
                 assert_eq!(
                     Tile::for_face(Block::OakLog(axis), face.normal),
                     expected,
@@ -364,10 +329,7 @@ mod tests {
     #[test]
     fn bark_turns_on_exactly_the_faces_across_the_grain() {
         let turned_faces = [
-            (
-                Axis::X,
-                vec![IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z],
-            ),
+            (Axis::X, vec![IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z]),
             (Axis::Y, vec![]),
             (Axis::Z, vec![IVec3::X, IVec3::NEG_X]),
         ];
@@ -381,12 +343,7 @@ mod tests {
                 } else {
                     vec![0, 1, 2, 3]
                 };
-                assert_eq!(
-                    corners[index * 4..index * 4 + 4],
-                    expected,
-                    "{axis:?} log facing {}",
-                    face.normal
-                );
+                assert_eq!(corners[index * 4..index * 4 + 4], expected, "{axis:?} log facing {}", face.normal);
             }
         }
     }
@@ -415,10 +372,7 @@ mod tests {
         world.set_block(stone + IVec3::new(1, 1, 0), Block::WorldBorder);
         assert_eq!(face_count(&world, IVec3::ZERO), 6);
         let top = &FACES[2];
-        assert_eq!(
-            face_occlusion(&Snapshot::new(&world, IVec3::ZERO), stone, top),
-            [0; 4]
-        );
+        assert_eq!(face_occlusion(&Snapshot::new(&world, IVec3::ZERO), stone, top), [0; 4]);
     }
 
     #[test]
@@ -439,14 +393,10 @@ mod tests {
             height: 160,
         };
         let world = terrain::generate(extent, 5);
-        let uniform: Vec<Block> = extent
-            .chunk_positions()
-            .filter_map(|chunk| world.uniform_chunk(chunk))
-            .collect();
+        let uniform: Vec<Block> = extent.chunk_positions().filter_map(|chunk| world.uniform_chunk(chunk)).collect();
         assert!(uniform.contains(&Block::Air) && uniform.contains(&Block::Stone));
         let sea_surface = |x, z| IVec3::new(x, terrain::SEA_LEVEL - 1, z);
-        let has_sea =
-            (-24..24).any(|x| (-24..24).any(|z| world.block(sea_surface(x, z)) == Block::Water));
+        let has_sea = (-24..24).any(|x| (-24..24).any(|z| world.block(sea_surface(x, z)) == Block::Water));
         assert!(has_sea);
         let mut chunks: Vec<IVec3> = extent.chunk_positions().collect();
         chunks.sort_by_key(|chunk| chunk.to_array());

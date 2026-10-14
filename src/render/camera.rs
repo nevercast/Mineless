@@ -76,15 +76,9 @@ mod tests {
         // Straddling the edge of the view.
         assert!(unit_box_at(Vec3::new(7.5, 0.0, -10.0)));
         assert!(!unit_box_at(Vec3::new(0.0, 0.0, 10.0)), "behind");
-        assert!(
-            !unit_box_at(Vec3::new(-50.0, 0.0, -10.0)),
-            "far to the left"
-        );
+        assert!(!unit_box_at(Vec3::new(-50.0, 0.0, -10.0)), "far to the left");
         assert!(!unit_box_at(Vec3::new(0.0, 50.0, -10.0)), "far above");
-        assert!(
-            !unit_box_at(Vec3::new(0.0, 0.0, -2000.0)),
-            "past the far plane"
-        );
+        assert!(!unit_box_at(Vec3::new(0.0, 0.0, -2000.0)), "past the far plane");
     }
 
     #[test]

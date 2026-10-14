@@ -47,10 +47,8 @@ impl Extent {
     /// Every chunk holding at least one block of the world. The outermost ones stick out past
     /// it when the half-width isn't a whole number of chunks.
     pub fn chunk_positions(self) -> impl Iterator<Item = IVec3> {
-        self.chunk_columns().flat_map(move |column| {
-            self.chunk_levels()
-                .map(move |y| IVec3::new(column.x, y, column.y))
-        })
+        self.chunk_columns()
+            .flat_map(move |column| self.chunk_levels().map(move |y| IVec3::new(column.x, y, column.y)))
     }
 
     /// The x and z chunk coordinates of every column of chunks in the world.
@@ -144,11 +142,9 @@ impl World {
                     for y in low.y..high.y {
                         for z in low.z..high.z {
                             for x in low.x..high.x {
-                                let (cell, local) =
-                                    (IVec3::new(x, y, z) - min, IVec3::new(x, y, z) - origin);
+                                let (cell, local) = (IVec3::new(x, y, z) - min, IVec3::new(x, y, z) - origin);
                                 let local = local.as_usizevec3();
-                                blocks[((cell.y * size.z + cell.z) * size.x + cell.x) as usize] =
-                                    chunk.get(local.x, local.y, local.z);
+                                blocks[((cell.y * size.z + cell.z) * size.x + cell.x) as usize] = chunk.get(local.x, local.y, local.z);
                             }
                         }
                     }
@@ -161,13 +157,7 @@ impl World {
     /// The height just above the highest solid block in the column at `x`, `z`, where a player
     /// can stand; 0 if the column is empty.
     pub fn column_top(&self, x: i32, z: i32) -> i32 {
-        let height = self
-            .chunks
-            .keys()
-            .map(|chunk| chunk.y + 1)
-            .max()
-            .unwrap_or(0)
-            * SIZE;
+        let height = self.chunks.keys().map(|chunk| chunk.y + 1).max().unwrap_or(0) * SIZE;
         (0..height)
             .rev()
             .find(|&y| self.block(IVec3::new(x, y, z)).is_solid())
@@ -231,21 +221,13 @@ mod tests {
     #[test]
     fn a_box_of_blocks_reads_the_same_as_each_block() {
         let mut world = World::default();
-        for position in [
-            IVec3::new(-1, 0, -1),
-            IVec3::new(0, 0, -1),
-            IVec3::new(-1, 1, 0),
-        ] {
+        for position in [IVec3::new(-1, 0, -1), IVec3::new(0, 0, -1), IVec3::new(-1, 1, 0)] {
             world.insert(position, Chunk::empty());
         }
         world.insert(IVec3::new(0, 1, 0), Chunk::Uniform(Block::Stone));
-        for (i, position) in [
-            IVec3::new(-3, 5, -2),
-            IVec3::new(2, 7, -9),
-            IVec3::new(-1, 20, 3),
-        ]
-        .into_iter()
-        .enumerate()
+        for (i, position) in [IVec3::new(-3, 5, -2), IVec3::new(2, 7, -9), IVec3::new(-1, 20, 3)]
+            .into_iter()
+            .enumerate()
         {
             let block = [Block::Dirt, Block::Sand, Block::Gravel][i];
             world.set_block(position, block);

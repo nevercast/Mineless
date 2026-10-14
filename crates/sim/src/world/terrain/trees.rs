@@ -50,16 +50,9 @@ fn candidate(seed: u32, cell: IVec2) -> (IVec2, u32) {
 impl Tree {
     /// The tree standing at `column`, if the candidate there grows. `columns` must reach
     /// `REACH - CANOPY_RADIUS` blocks round it.
-    fn grown(
-        seed: u32,
-        column: IVec2,
-        roll: u32,
-        columns: &Neighbourhood,
-        extent: Extent,
-    ) -> Option<Tree> {
+    fn grown(seed: u32, column: IVec2, roll: u32, columns: &Neighbourhood, extent: Extent) -> Option<Tree> {
         let (x, z) = (column.x, column.y);
-        let clear_of_border =
-            (-extent.half_width + BORDER_CLEARANCE)..(extent.half_width - BORDER_CLEARANCE);
+        let clear_of_border = (-extent.half_width + BORDER_CLEARANCE)..(extent.half_width - BORDER_CLEARANCE);
         if !clear_of_border.contains(&x) || !clear_of_border.contains(&z) {
             return None;
         }
@@ -114,18 +107,12 @@ impl Tree {
 }
 
 /// Every tree that reaches into the chunk column whose bottom chunk is at `origin`.
-pub(super) fn reaching(
-    seed: u32,
-    origin: IVec3,
-    columns: &Neighbourhood,
-    extent: Extent,
-) -> Vec<Tree> {
+pub(super) fn reaching(seed: u32, origin: IVec3, columns: &Neighbourhood, extent: Extent) -> Vec<Tree> {
     let first = (origin.xz() - CANOPY_RADIUS).div_euclid(IVec2::splat(CELL));
     let last = (origin.xz() + SIZE - 1 + CANOPY_RADIUS).div_euclid(IVec2::splat(CELL));
     let reaches_column = |column: IVec2| {
         let local = column - origin.xz();
-        local.cmpge(IVec2::splat(-CANOPY_RADIUS)).all()
-            && local.cmplt(IVec2::splat(SIZE + CANOPY_RADIUS)).all()
+        local.cmpge(IVec2::splat(-CANOPY_RADIUS)).all() && local.cmplt(IVec2::splat(SIZE + CANOPY_RADIUS)).all()
     };
     (first.x..=last.x)
         .flat_map(|x| (first.y..=last.y).map(move |z| IVec2::new(x, z)))
@@ -141,8 +128,7 @@ pub(super) fn reaching(
 pub(super) fn plant(chunk: &mut Chunk, origin: IVec3, trees: &[Tree]) {
     let local = |position: IVec3| {
         let local = position - origin;
-        (local.cmpge(IVec3::ZERO).all() && local.cmplt(IVec3::splat(SIZE)).all())
-            .then(|| local.as_usizevec3())
+        (local.cmpge(IVec3::ZERO).all() && local.cmplt(IVec3::splat(SIZE)).all()).then(|| local.as_usizevec3())
     };
     for leaf in trees.iter().flat_map(Tree::leaves) {
         if let Some(at) = local(leaf)
@@ -177,10 +163,7 @@ mod tests {
 
     /// The origins of the bottom chunk of every chunk column in `EXTENT`.
     fn column_origins() -> impl Iterator<Item = IVec3> {
-        EXTENT
-            .chunk_positions()
-            .filter(|chunk| chunk.y == 0)
-            .map(|chunk| chunk * SIZE)
+        EXTENT.chunk_positions().filter(|chunk| chunk.y == 0).map(|chunk| chunk * SIZE)
     }
 
     /// The tree of a grid cell inside the chunk `columns` was built for.
@@ -246,14 +229,9 @@ mod tests {
                         assert_eq!(axis, Axis::Y);
                         assert!(position.y >= SEA_LEVEL, "log at {position}");
                         let below = world.block(position - IVec3::Y);
-                        assert!(
-                            matches!(below, Block::Dirt | Block::OakLog(_)),
-                            "log at {position} on {below:?}"
-                        );
+                        assert!(matches!(below, Block::Dirt | Block::OakLog(_)), "log at {position} on {below:?}");
                         if !matches!(world.block(position + IVec3::Y), Block::OakLog(_)) {
-                            let leafy = (1..=2).any(|up| {
-                                world.block(position + IVec3::Y * up) == Block::OakLeaves
-                            });
+                            let leafy = (1..=2).any(|up| world.block(position + IVec3::Y * up) == Block::OakLeaves);
                             assert!(leafy, "bare trunk top at {position}");
                         }
                     }
@@ -299,9 +277,6 @@ mod tests {
         }
         let density = |(trees, columns): (i32, i32)| trees as f32 / columns.max(1) as f32;
         assert!(forest.1 > 0 && plains.1 > 0);
-        assert!(
-            density(forest) > 4.0 * density(plains),
-            "forest {forest:?}, plains {plains:?}"
-        );
+        assert!(density(forest) > 4.0 * density(plains), "forest {forest:?}, plains {plains:?}");
     }
 }

@@ -18,10 +18,7 @@ struct Aabb {
 impl Aabb {
     fn block(position: IVec3) -> Self {
         let min = position.as_vec3();
-        Self {
-            min,
-            max: min + Vec3::ONE,
-        }
+        Self { min, max: min + Vec3::ONE }
     }
 
     /// How far this box can move along `axis` towards `other`, limited to `distance`. Boxes that
@@ -74,9 +71,7 @@ impl Body {
         let mut aabb = start;
         let mut moved = Vec3::ZERO;
         for axis in [1, 0, 2] {
-            let distance = blocks.iter().fold(delta[axis], |distance, block| {
-                aabb.clip(block, axis, distance)
-            });
+            let distance = blocks.iter().fold(delta[axis], |distance, block| aabb.clip(block, axis, distance));
             aabb.min[axis] += distance;
             aabb.max[axis] += distance;
             moved[axis] = distance;
@@ -89,9 +84,7 @@ impl Body {
 fn blocks_touching(aabb: &Aabb) -> impl Iterator<Item = IVec3> {
     let min = aabb.min.floor().as_ivec3();
     let max = aabb.max.floor().as_ivec3();
-    (min.x..=max.x).flat_map(move |x| {
-        (min.y..=max.y).flat_map(move |y| (min.z..=max.z).map(move |z| IVec3::new(x, y, z)))
-    })
+    (min.x..=max.x).flat_map(move |x| (min.y..=max.y).flat_map(move |y| (min.z..=max.z).map(move |z| IVec3::new(x, y, z))))
 }
 
 #[cfg(test)]
@@ -145,11 +138,7 @@ mod tests {
         body.move_and_collide(&room(), Vec3::new(0.5, 0.0, 0.0));
         assert!(body.aabb().max.x <= 3.0);
         let blocked = body.move_and_collide(&room(), Vec3::new(0.0, 0.0, 0.5));
-        assert_eq!(
-            blocked,
-            BVec3::FALSE,
-            "resting a hair inside the floor doesn't snag"
-        );
+        assert_eq!(blocked, BVec3::FALSE, "resting a hair inside the floor doesn't snag");
     }
 
     #[test]

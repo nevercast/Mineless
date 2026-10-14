@@ -120,11 +120,7 @@ mod tests {
         for x in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
                 for z in 0..CHUNK_SIZE {
-                    let expected = if (x, y, z) == (4, 5, 6) {
-                        Block::Air
-                    } else {
-                        Block::Stone
-                    };
+                    let expected = if (x, y, z) == (4, 5, 6) { Block::Air } else { Block::Stone };
                     assert_eq!(chunk.get(x, y, z), expected);
                 }
             }

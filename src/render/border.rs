@@ -12,11 +12,7 @@ pub struct Border {
 const VERTICES: u32 = 24;
 
 impl Border {
-    pub fn new(
-        device: &wgpu::Device,
-        frame_layout: &wgpu::BindGroupLayout,
-        extent: Extent,
-    ) -> Self {
+    pub fn new(device: &wgpu::Device, frame_layout: &wgpu::BindGroupLayout, extent: Extent) -> Self {
         let shader = super::frame_shader(device, "border", include_str!("border.wgsl"));
         let pipeline = super::scene_pipeline(
             device,
@@ -95,12 +91,6 @@ mod tests {
         }
         let min = vertices.iter().fold(Vec3::MAX, |a, &v| a.min(v));
         let max = vertices.iter().fold(Vec3::MIN, |a, &v| a.max(v));
-        assert_eq!(
-            (min, max),
-            (
-                Vec3::new(-159.0, 0.0, -159.0),
-                Vec3::new(159.0, 160.0, 159.0)
-            )
-        );
+        assert_eq!((min, max), (Vec3::new(-159.0, 0.0, -159.0), Vec3::new(159.0, 160.0, 159.0)));
     }
 }

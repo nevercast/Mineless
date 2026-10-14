@@ -145,10 +145,7 @@ pub struct Generation {
 
 impl Generation {
     pub fn new(extent: Extent, seed: u32) -> Self {
-        assert!(
-            extent.height >= HEIGHT,
-            "the world must be at least as tall as the terrain"
-        );
+        assert!(extent.height >= HEIGHT, "the world must be at least as tall as the terrain");
         Self {
             seed,
             extent,
@@ -211,8 +208,7 @@ impl Generation {
                 .map(|_| {
                     scope.spawn(|| {
                         let mut generated = Vec::new();
-                        while let Some(&column) = columns.get(next.fetch_add(1, Ordering::Relaxed))
-                        {
+                        while let Some(&column) = columns.get(next.fetch_add(1, Ordering::Relaxed)) {
                             generated.push((column, generate_column(seed, column, extent)));
                             if start.elapsed() >= budget {
                                 break;
@@ -306,11 +302,7 @@ impl Neighbourhood {
             .map(|(i, k)| lattice.column(origin.x + i, origin.z + k))
             .collect();
         let tops = columns.iter().map(Column::top).collect();
-        Self {
-            origin,
-            columns,
-            tops,
-        }
+        Self { origin, columns, tops }
     }
 
     fn index(&self, x: i32, z: i32) -> usize {
@@ -392,14 +384,9 @@ impl Surface {
         let top = columns.top(x, z);
         let (temperature, humidity) = climate(seed, x, z);
         let point = Vec2::new(x as f32, z as f32);
-        let noise = |salt: u32, scale: f32| {
-            fractal(2, |frequency, octave| {
-                gradient_2d(seed ^ salt ^ octave, point * frequency / scale)
-            })
-        };
+        let noise = |salt: u32, scale: f32| fractal(2, |frequency, octave| gradient_2d(seed ^ salt ^ octave, point * frequency / scale));
         let (shallowest, deepest) = (*RUN_DEPTHS.start(), *RUN_DEPTHS.end());
-        let run = shallowest
-            + ((noise(RUN_SALT, RUN_SCALE) + 0.5) * (deepest - shallowest) as f32).round() as i32;
+        let run = shallowest + ((noise(RUN_SALT, RUN_SCALE) + 0.5) * (deepest - shallowest) as f32).round() as i32;
         let seabed = match noise(SEABED_SALT, SEABED_SCALE) {
             n if n > SEABED_PATCH => Block::Gravel,
             n if n < -SEABED_PATCH => Block::Dirt,
@@ -463,19 +450,11 @@ impl Surface {
             return (Block::Snow, if cliff { Block::Stone } else { Block::Dirt });
         }
         if y < SEA_LEVEL - 1 {
-            let floor = if y >= SEA_LEVEL - 1 - SHALLOWS {
-                Block::Sand
-            } else {
-                self.seabed
-            };
+            let floor = if y >= SEA_LEVEL - 1 - SHALLOWS { Block::Sand } else { self.seabed };
             return (floor, floor);
         }
         if self.biome == Biome::Beach && y <= SEA_LEVEL + 2 {
-            let shore = if self.shingle {
-                Block::Gravel
-            } else {
-                Block::Sand
-            };
+            let shore = if self.shingle { Block::Gravel } else { Block::Sand };
             return (shore, shore);
         }
         if cliff || (self.biome == Biome::Hills && y >= HIGH_ROCK_LINE && self.high_rock) {
@@ -535,8 +514,7 @@ impl Lattice {
         let t = local.rem_euclid(step).as_vec2() / step.as_vec2();
         let IVec2 { x: i, y: k } = local.div_euclid(step);
         debug_assert!(i >= 0 && k >= 0 && i + 1 < self.across && k + 1 < self.across);
-        let corners = [(i, k), (i + 1, k), (i, k + 1), (i + 1, k + 1)]
-            .map(|(i, k)| (i * self.across + k) as usize);
+        let corners = [(i, k), (i + 1, k), (i, k + 1), (i + 1, k + 1)].map(|(i, k)| (i * self.across + k) as usize);
         let blend = |value: &dyn Fn(usize) -> f32| {
             let [a, b, c, d] = corners.map(value);
             lerp(lerp(a, b, t.x), lerp(c, d, t.x), t.y)
@@ -602,10 +580,7 @@ impl Fields {
         let column = Vec2::new(x as f32, z as f32);
         let elevation = ELEVATION_OFFSET
             + fractal(4, |frequency, salt| {
-                gradient_2d(
-                    seed ^ ELEVATION_SALT ^ salt,
-                    column * frequency / ELEVATION_SCALE,
-                )
+                gradient_2d(seed ^ ELEVATION_SALT ^ salt, column * frequency / ELEVATION_SCALE)
             });
         let relief = smoothstep(
             RELIEF_START,
@@ -616,12 +591,7 @@ impl Fields {
         );
         Self {
             target: SEA_LEVEL as f32
-                + elevation
-                    * if elevation < 0.0 {
-                        SEA_SPREAD
-                    } else {
-                        LOWLAND_SPREAD
-                    }
+                + elevation * if elevation < 0.0 { SEA_SPREAD } else { LOWLAND_SPREAD }
                 + COAST_RISE * smoothstep(0.0, COAST_EDGE, elevation)
                 + UPLAND_RISE * relief,
             detail: lerp(PLAINS_DETAIL, UPLAND_DETAIL, relief),
@@ -640,9 +610,7 @@ impl Fields {
             return shape.signum();
         }
         let point = Vec3::new(x as f32, y as f32, z as f32) / DETAIL_SCALE;
-        let detail = fractal(5, |frequency, salt| {
-            gradient_3d(seed ^ DETAIL_SALT ^ salt, point * frequency)
-        });
+        let detail = fractal(5, |frequency, salt| gradient_3d(seed ^ DETAIL_SALT ^ salt, point * frequency));
         (shape + self.detail * detail).clamp(-1.0, 1.0)
     }
 }
@@ -680,17 +648,9 @@ mod tests {
     }
 
     /// Generates each column on its own into `world`.
-    fn insert_columns(
-        world: &mut World,
-        seed: u32,
-        extent: Extent,
-        columns: impl Iterator<Item = IVec2>,
-    ) {
+    fn insert_columns(world: &mut World, seed: u32, extent: Extent, columns: impl Iterator<Item = IVec2>) {
         for column in columns {
-            for (y, chunk) in extent
-                .chunk_levels()
-                .zip(generate_column(seed, column, extent))
-            {
+            for (y, chunk) in extent.chunk_levels().zip(generate_column(seed, column, extent)) {
                 world.insert(IVec3::new(column.x, y, column.y), chunk);
             }
         }
@@ -710,10 +670,7 @@ mod tests {
         let mut reversed = World::default();
         insert_columns(&mut reversed, 5, EXTENT, columns.iter().rev().copied());
         for position in EXTENT.chunk_positions() {
-            assert!(
-                in_order.chunks[&position] == reversed.chunks[&position],
-                "{position}"
-            );
+            assert!(in_order.chunks[&position] == reversed.chunks[&position], "{position}");
         }
     }
 
@@ -723,10 +680,7 @@ mod tests {
         let border = IVec3::new(-2, 1, 0);
         let interior = IVec3::new(-1, 2, 0);
         for position in [border, interior] {
-            assert!(
-                generate_chunk(5, position, EXTENT) == world.chunks[&position],
-                "{position}"
-            );
+            assert!(generate_chunk(5, position, EXTENT) == world.chunks[&position], "{position}");
         }
         assert_eq!(world.block(IVec3::new(-24, 20, 5)), Block::WorldBorder);
     }
@@ -778,8 +732,7 @@ mod tests {
         let world = generate(EXTENT, 5);
         for x in (-23..23).step_by(3) {
             for z in (-23..23).step_by(5) {
-                let lattice =
-                    Lattice::around(5, IVec3::new(x, 0, z).div_euclid(IVec3::splat(SIZE)) * SIZE);
+                let lattice = Lattice::around(5, IVec3::new(x, 0, z).div_euclid(IVec3::splat(SIZE)) * SIZE);
                 let top = lattice.column(x, z).top();
                 if (top..HEIGHT).any(|y| is_tree(world.block(IVec3::new(x, y, z)))) {
                     continue;
@@ -808,9 +761,7 @@ mod tests {
     #[test]
     fn mostly_lowland_with_some_sea_and_some_uplands() {
         let tops: Vec<i32> = (0..4).flat_map(tops).collect();
-        let share = |test: &dyn Fn(i32) -> bool| {
-            tops.iter().filter(|&&top| test(top)).count() as f32 / tops.len() as f32
-        };
+        let share = |test: &dyn Fn(i32) -> bool| tops.iter().filter(|&&top| test(top)).count() as f32 / tops.len() as f32;
         let below_sea = share(&|top| top < SEA_LEVEL);
         let lowland = share(&|top| (SEA_LEVEL + 1..=SEA_LEVEL + 12).contains(&top));
         assert!((0.1..=0.4).contains(&below_sea), "{below_sea}");
@@ -842,11 +793,7 @@ mod tests {
             for x in 0..255 {
                 for z in 0..256 {
                     let step = (top(x + 1, z) - top(x, z)).abs();
-                    let tally = if (x + 1) % SIZE == 0 {
-                        &mut border
-                    } else {
-                        &mut inside
-                    };
+                    let tally = if (x + 1) % SIZE == 0 { &mut border } else { &mut inside };
                     tally.0 += step;
                     tally.1 += 1;
                 }
@@ -854,10 +801,7 @@ mod tests {
         }
         let mean = |(sum, count): (i32, i32)| sum as f32 / count as f32;
         let (border, inside) = (mean(border), mean(inside));
-        assert!(
-            (border - inside).abs() <= inside * 0.25,
-            "{border} vs {inside}"
-        );
+        assert!((border - inside).abs() <= inside * 0.25, "{border} vs {inside}");
     }
 
     /// Dressed blocks of a 96x96 area in the middle of the full world, clear of the border, for
@@ -932,11 +876,7 @@ mod tests {
                 let column = columns.column(x, z);
                 let blocks = surface.blocks(column);
                 for y in 0..HEIGHT {
-                    assert_eq!(
-                        blocks[y as usize],
-                        surface.block(column, y),
-                        "{x}, {y}, {z}"
-                    );
+                    assert_eq!(blocks[y as usize], surface.block(column, y), "{x}, {y}, {z}");
                 }
             }
         }
@@ -1049,14 +989,7 @@ mod tests {
                 found.push(block);
             }
         }
-        for block in [
-            Block::Grass,
-            Block::Dirt,
-            Block::Stone,
-            Block::Sand,
-            Block::Gravel,
-            Block::Snow,
-        ] {
+        for block in [Block::Grass, Block::Dirt, Block::Stone, Block::Sand, Block::Gravel, Block::Snow] {
             assert!(found.contains(&block), "{block:?}");
         }
     }
@@ -1110,11 +1043,7 @@ mod tests {
         const BEACH_AND_FLOATING: u32 = 108;
 
         let share = |found: &[(Surface, Column)], biome: Biome| {
-            found
-                .iter()
-                .filter(|(surface, _)| surface.biome == biome)
-                .count() as f32
-                / found.len() as f32
+            found.iter().filter(|(surface, _)| surface.biome == biome).count() as f32 / found.len() as f32
         };
 
         let hills = surfaces(EXTREME_HILLS, IVec2::new(1, 1), IVec2::new(8, 8));
@@ -1131,10 +1060,7 @@ mod tests {
         let coast = surfaces(BEACH_AND_FLOATING, IVec2::new(-9, -8), IVec2::new(2, -3));
         let sand = coast
             .iter()
-            .filter(|(surface, column)| {
-                surface.biome == Biome::Beach
-                    && surface.block(column, surface.top - 1) == Block::Sand
-            })
+            .filter(|(surface, column)| surface.biome == Biome::Beach && surface.block(column, surface.top - 1) == Block::Sand)
             .count();
         assert!(sand > 1000, "{sand}");
 
@@ -1143,8 +1069,7 @@ mod tests {
         // canopy can touch it without holding it up.
         let mut world = World::default();
         let (low, high) = (IVec3::new(4, 4, 2), IVec3::new(5, 5, 4));
-        let columns =
-            (low.x..=high.x).flat_map(|x| (low.z..=high.z).map(move |z| IVec2::new(x, z)));
+        let columns = (low.x..=high.x).flat_map(|x| (low.z..=high.z).map(move |z| IVec2::new(x, z)));
         insert_columns(&mut world, BEACH_AND_FLOATING, FULL_WORLD, columns);
         let (min, max) = (low * SIZE, (high + 1) * SIZE - 1);
         let ground = |position: IVec3| {
@@ -1160,14 +1085,7 @@ mod tests {
                 position.cmpgt(min).all() && position.cmplt(max).all(),
                 "the lump reaches {position}"
             );
-            for step in [
-                IVec3::X,
-                IVec3::NEG_X,
-                IVec3::Y,
-                IVec3::NEG_Y,
-                IVec3::Z,
-                IVec3::NEG_Z,
-            ] {
+            for step in [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z] {
                 let next = position + step;
                 if ground(next) && reached.insert(next) {
                     frontier.push(next);

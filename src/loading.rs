@@ -64,13 +64,7 @@ impl Loading {
 
     /// Builds `world` and the meshes in view of the start camera for about `budget`. Returns
     /// whether loading is finished. Prints how long each phase took as it ends.
-    pub fn work(
-        &mut self,
-        world: &mut World,
-        area: &mut MeshedArea,
-        renderer: &mut Renderer,
-        budget: Duration,
-    ) -> bool {
+    pub fn work(&mut self, world: &mut World, area: &mut MeshedArea, renderer: &mut Renderer, budget: Duration) -> bool {
         if self.phase == Phase::BuildingMeshes {
             self.unmeshed = area.update(world, renderer, self.camera, budget);
             let finished = self.unmeshed == 0;

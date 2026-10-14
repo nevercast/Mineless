@@ -118,15 +118,10 @@ mod tests {
 
     #[test]
     fn every_printable_ascii_character_has_its_own_glyph() {
-        let glyphs: Vec<[u8; GLYPH_HEIGHT]> =
-            (' '..='~').map(|c| glyph(c).expect("printable")).collect();
+        let glyphs: Vec<[u8; GLYPH_HEIGHT]> = (' '..='~').map(|c| glyph(c).expect("printable")).collect();
         for (index, rows) in glyphs.iter().enumerate() {
             assert!(rows.iter().all(|&row| row < 1 << GLYPH_WIDTH));
-            assert!(
-                !glyphs[..index].contains(rows),
-                "{:?}",
-                (b' ' + index as u8) as char
-            );
+            assert!(!glyphs[..index].contains(rows), "{:?}", (b' ' + index as u8) as char);
         }
         assert_eq!(glyph('\u{7f}'), None);
         assert_eq!(glyph('\n'), None);
