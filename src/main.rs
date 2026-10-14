@@ -1,4 +1,6 @@
 mod avatar;
+mod loading;
+mod meshed_area;
 mod mesher;
 mod render;
 mod sky;
@@ -6,7 +8,7 @@ mod spectator;
 
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
@@ -14,17 +16,28 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use glam::{IVec2, Vec2, Vec3, vec3};
+use glam::{IVec2, Vec2, Vec3, Vec3Swizzles, vec3};
+use loading::Loading;
+use meshed_area::MeshedArea;
 use render::{Camera, Renderer};
 use sim::avatar::{Avatar, Skin};
 use sim::player::{JUMP_HEIGHTS, Player, TICK_RATE};
-use sim::world::{self, Extent, World};
+use sim::world::{Extent, World};
 use sky::{DAY_TICKS, Sky};
 use spectator::Spectator;
 
 struct App {
     world: World,
     seed: u32,
+    /// The world still being built, until play starts.
+    loading: Option<Loading>,
+    meshed: MeshedArea,
+    /// When the loading screen was last drawn. Drawing waits for vsync, so the screen is only
+    /// redrawn now and then and the frames in between go to loading.
+    loading_drawn: Option<Instant>,
+    /// When the program started, for reporting how long loading took.
+    launched: Instant,
+    /// Empty until the world is loaded, since they stand on it.
     players: Vec<Player>,
     /// Simulation ticks since the world began.
     ticks: u64,
@@ -74,10 +87,7 @@ impl ApplicationHandler for App {
         let attributes =
             Window::default_attributes().with_title(format!("Mineless | seed {}", self.seed));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
-        let mut renderer = pollster::block_on(Renderer::new(window.clone(), WORLD));
-        for chunk in self.world.chunk_positions() {
-            renderer.upload_chunk_mesh(chunk, &mesher::build_chunk_mesh(&self.world, chunk));
-        }
+        let renderer = pollster::block_on(Renderer::new(window.clone(), WORLD));
         self.renderer = Some(renderer);
         self.window = Some(window);
     }
@@ -104,11 +114,41 @@ impl ApplicationHandler for App {
                 self.spectator.release_all();
                 self.mouse_captured = set_mouse_capture(window, false);
             }
+            WindowEvent::RedrawRequested if self.loading.is_some() => {
+                let loading = self.loading.as_mut().expect("checked by the match guard");
+                if loading.work(&mut self.world, &mut self.meshed, renderer, LOADING_SLICE) {
+                    self.loading = None;
+                    eprintln!(
+                        "Playable after {:.2} s",
+                        self.launched.elapsed().as_secs_f32()
+                    );
+                    self.players = test_players(&self.world);
+                    let ground = self
+                        .world
+                        .column_top(START_POSITION.x as i32, START_POSITION.z as i32);
+                    self.camera = start_camera(ground);
+                    self.last_frame = Instant::now();
+                    window.set_title(&format!("Mineless | seed {}", self.seed));
+                } else if self
+                    .loading_drawn
+                    .is_none_or(|drawn| drawn.elapsed() >= LOADING_SCREEN_INTERVAL)
+                {
+                    self.loading_drawn = Some(Instant::now());
+                    let percent = (loading.progress() * 100.0).floor();
+                    let detail = format!("{} {percent:.0}%", loading.phase().name());
+                    renderer.render_loading(loading.progress(), &detail);
+                    window.set_title(&format!("Mineless | seed {} | {detail}", self.seed));
+                }
+                window.request_redraw();
+            }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
                 let seconds = (now - self.last_frame).as_secs_f32();
                 self.last_frame = now;
                 self.spectator.update(&mut self.camera, seconds);
+                let camera = self.camera.position.xz();
+                self.meshed
+                    .update(&self.world, renderer, camera, MESHING_SLICE);
                 // Simulate in fixed ticks; a long stall drops time rather than ticking to catch up.
                 self.unsimulated = (self.unsimulated + seconds).min(MAX_CATCH_UP);
                 while self.unsimulated >= 1.0 / TICK_RATE {
@@ -176,10 +216,10 @@ fn set_mouse_capture(window: &Window, capture: bool) -> bool {
     grabbed
 }
 
-/// 320 blocks square, big enough that render costs show up, and 160 tall, which leaves room to
-/// build above the highest mountains.
+/// 2016 blocks square, from -1008 to 1008 so the border lies on chunk edges, generated whole on
+/// first load, and 160 tall, which leaves room to build above the highest mountains.
 const WORLD: Extent = Extent {
-    half_width: 160,
+    half_width: 1008,
     height: 160,
 };
 /// The world unless `--seed` picks another. This one shows sea, beach, uplands, forest and a
@@ -229,23 +269,30 @@ fn ground_at(world: &World, x: i32, z: i32) -> Vec3 {
 }
 
 const MAX_CATCH_UP: f32 = 0.25;
+/// Work done per frame while loading: enough to load quickly, little enough that the window
+/// stays responsive.
+const LOADING_SLICE: Duration = Duration::from_millis(12);
+const LOADING_SCREEN_INTERVAL: Duration = Duration::from_millis(100);
+/// Meshing done per frame as the camera brings chunks into range: far chunks may appear a
+/// little late, but the frame rate doesn't hitch.
+const MESHING_SLICE: Duration = Duration::from_millis(4);
 
 /// The world starts mid-morning.
 const START_TICKS: u64 = DAY_TICKS * 3 / 8;
 
-/// Blocks between neighbouring players in the starting grid.
+/// Blocks between neighbouring players in the starting grid, and players along each side of it.
 const PLAYER_SPACING: i32 = 64;
+const PLAYERS_ACROSS: i32 = 5;
 
-/// A player every `PLAYER_SPACING` blocks across the world, skins in turn, so ticks have a crowd
-/// to simulate. The first stands idle, the second drops from twelve blocks up and then stands
-/// idle too, and the rest walk.
+/// A grid of players round the origin, skins in turn, so ticks have a crowd to simulate. The
+/// first stands idle, the second drops from twelve blocks up and then stands idle too, and the
+/// rest walk.
 fn test_players(world: &World) -> Vec<Player> {
-    let across = 2 * WORLD.half_width / PLAYER_SPACING;
-    (0..across)
-        .flat_map(|x| (0..across).map(move |z| IVec2::new(x, z)))
+    (0..PLAYERS_ACROSS)
+        .flat_map(|x| (0..PLAYERS_ACROSS).map(move |z| IVec2::new(x, z)))
         .enumerate()
         .map(|(index, cell)| {
-            let column = cell * PLAYER_SPACING + PLAYER_SPACING / 2 - WORLD.half_width;
+            let column = (cell - PLAYERS_ACROSS / 2) * PLAYER_SPACING;
             let mut position = ground_at(world, column.x, column.y);
             if index == 1 {
                 position.y += 12.0;
@@ -312,13 +359,17 @@ fn main() {
         eprintln!("{error}\n{USAGE}");
         std::process::exit(2);
     });
+    let launched = Instant::now();
     let event_loop = EventLoop::new().expect("create event loop");
-    let world = world::terrain::generate(WORLD, seed);
     let mut app = App {
-        players: test_players(&world),
-        camera: start_camera(world.column_top(START_POSITION.x as i32, START_POSITION.z as i32)),
-        world,
+        world: World::default(),
         seed,
+        loading: Some(Loading::new(WORLD, seed, START_POSITION.xz())),
+        meshed: MeshedArea::new(WORLD),
+        loading_drawn: None,
+        launched,
+        players: Vec::new(),
+        camera: start_camera(0),
         ticks: START_TICKS,
         unsimulated: 0.0,
         window: None,
@@ -375,9 +426,18 @@ mod tests {
 
     #[test]
     fn wanderer_stays_inside_the_world_border() {
-        let world = world::terrain::generate(WORLD, SEED);
+        // Small enough to generate quickly in a debug build, with the outer players starting
+        // 32 blocks from its border.
+        let small_world = Extent {
+            half_width: 160,
+            height: WORLD.height,
+        };
+        let world = sim::world::terrain::generate(small_world, SEED);
         let mut players = test_players(&world);
-        let (low, high) = (WORLD.min().as_vec3() + 1.0, WORLD.max().as_vec3() - 1.0);
+        let (low, high) = (
+            small_world.min().as_vec3() + 1.0,
+            small_world.max().as_vec3() - 1.0,
+        );
         let camera = ground_at(&world, 0, 0);
         // An hour of simulation.
         for _ in 0..(3600.0 * TICK_RATE) as u32 {
