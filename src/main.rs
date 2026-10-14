@@ -52,6 +52,8 @@ struct App {
     /// Whether chunks walled off from the camera by terrain are left undrawn. `CULLING_KEY` turns
     /// it off and on, to compare.
     culling: bool,
+    /// Whether only the walls of caves are drawn, glowing through the rock. `XRAY_KEY` turns it on and off.
+    xray: bool,
     last_frame: Instant,
     timings: Timings,
 }
@@ -112,9 +114,9 @@ impl ApplicationHandler for App {
                 if event.physical_key == PhysicalKey::Code(KeyCode::Escape) {
                     self.mouse_captured = set_mouse_capture(window, false);
                 }
-                if event.physical_key == PhysicalKey::Code(CULLING_KEY) && event.state == ElementState::Pressed && !event.repeat {
-                    self.culling = !self.culling;
-                }
+                let pressed = |key| event.physical_key == PhysicalKey::Code(key) && event.state == ElementState::Pressed && !event.repeat;
+                self.culling ^= pressed(CULLING_KEY);
+                self.xray ^= pressed(XRAY_KEY);
                 self.spectator.key(&event);
             }
             WindowEvent::MouseInput {
@@ -169,9 +171,9 @@ impl ApplicationHandler for App {
                 let day_fraction = ((self.ticks % DAY_TICKS) as f32 + alpha) / DAY_TICKS as f32;
                 // From inside rock the back faces of the rock are culled, so it is see-through and every cave around shows. The
                 // walk starts at the camera's chunk as open space and would stop at the solid chunks round it, so it waits until
-                // the camera is back in the open.
+                // the camera is back in the open. The x-ray view shows caves however walled off they are.
                 let in_rock = self.world.block(self.camera.position.floor().as_ivec3()).is_solid();
-                let culling = self.culling && !in_rock;
+                let culling = self.culling && !in_rock && !self.xray;
                 let walk_start = Instant::now();
                 let seen = culling.then(|| seen_chunks(&self.camera, &renderer.frustum(&self.camera), &self.meshed));
                 let walk_seconds = walk_start.elapsed().as_secs_f32();
@@ -181,6 +183,7 @@ impl ApplicationHandler for App {
                     day_fraction * DAY_TICKS as f32 / TICK_RATE,
                     &avatars,
                     seen.as_ref(),
+                    self.xray,
                 );
                 let timings = &mut self.timings;
                 timings.frames += 1;
@@ -297,6 +300,8 @@ const LOADING_SLICE: Duration = Duration::from_millis(12);
 const LOADING_SCREEN_INTERVAL: Duration = Duration::from_millis(100);
 /// Turns culling of chunks walled off from the camera off and on, to compare. V for visibility.
 const CULLING_KEY: KeyCode = KeyCode::KeyV;
+/// Turns the x-ray view of the caves on and off.
+const XRAY_KEY: KeyCode = KeyCode::KeyX;
 /// Meshing done per frame as the camera brings chunks into range: far chunks may appear a
 /// little late, but the frame rate doesn't hitch.
 const MESHING_SLICE: Duration = Duration::from_millis(4);
@@ -401,6 +406,7 @@ fn main() {
         spectator: Spectator::default(),
         mouse_captured: false,
         culling: true,
+        xray: false,
         last_frame: Instant::now(),
         timings: Timings::default(),
     };

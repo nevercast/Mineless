@@ -7,16 +7,17 @@ use sim::world::{Axis, Block, CHUNK_SIZE, World};
 /// One corner of a block face packed into 32 bits, unpacked in shader.wgsl. From the low bits:
 /// position in the chunk (5 bits each for x, y, z, since corners reach 16), index into `FACES`
 /// (3 bits), which corner of the face it is, for texture coordinates (2), solid blocks around the
-/// corner for AO (2), and the layer of the block texture array (8). The chunk's world position is
-/// an instance attribute shared by every vertex in the chunk.
+/// corner for AO (2), the layer of the block texture array (8), and whether the face looks into a cave (1), for the x-ray view.
+/// The chunk's world position is an instance attribute shared by every vertex in the chunk.
 #[repr(transparent)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Vertex(u32);
 
 impl Vertex {
-    fn new(position: IVec3, face: usize, corner: usize, occluders: usize, tile: Tile) -> Self {
+    fn new(position: IVec3, face: usize, corner: usize, occluders: usize, tile: Tile, cave: bool) -> Self {
         let [x, y, z] = position.as_uvec3().to_array();
-        Self(x | y << 5 | z << 10 | (face as u32) << 15 | (corner as u32) << 18 | (occluders as u32) << 20 | (tile as u32) << 22)
+        let fields = (face as u32) << 15 | (corner as u32) << 18 | (occluders as u32) << 20 | (tile as u32) << 22 | u32::from(cave) << 30;
+        Self(x | y << 5 | z << 10 | fields)
     }
 }
 
@@ -140,6 +141,8 @@ struct Snapshot {
     /// World position of the first block in `blocks`, one block below and behind the chunk.
     origin: IVec3,
     blocks: Vec<Block>,
+    /// Whether rock or soil lies anywhere above each block, in the same order as `blocks`. Air with a roof over it is a cave.
+    roofed: Vec<bool>,
 }
 
 impl Snapshot {
@@ -152,14 +155,38 @@ impl Snapshot {
                 *block = Block::Air;
             }
         }
-        Self { origin, blocks }
+        let mut roofed = vec![false; blocks.len()];
+        for z in 0..PADDED {
+            for x in 0..PADDED {
+                let mut covered = world.any_above(origin + IVec3::new(x, PADDED - 1, z), roofs);
+                for y in (0..PADDED).rev() {
+                    let index = Self::index(IVec3::new(x, y, z));
+                    roofed[index] = covered;
+                    covered |= roofs(blocks[index]);
+                }
+            }
+        }
+        Self { origin, blocks, roofed }
+    }
+
+    fn index(local: IVec3) -> usize {
+        ((local.y * PADDED + local.z) * PADDED + local.x) as usize
     }
 
     /// The block at a world position inside the chunk or its border.
     fn block(&self, position: IVec3) -> Block {
-        let local = position - self.origin;
-        self.blocks[((local.y * PADDED + local.z) * PADDED + local.x) as usize]
+        self.blocks[Self::index(position - self.origin)]
     }
+
+    /// Whether a world position inside the chunk or its border has rock or soil somewhere above it.
+    fn roofed(&self, position: IVec3) -> bool {
+        self.roofed[Self::index(position - self.origin)]
+    }
+}
+
+/// Blocks that roof a cave: terrain, not trees, which only shade the ground beneath them, nor the border.
+fn roofs(block: Block) -> bool {
+    block.is_solid() && !matches!(block, Block::OakLog(_) | Block::OakLeaves | Block::WorldBorder)
 }
 
 /// Builds the meshes for one chunk. Solid blocks show the faces that look into air or water;
@@ -189,12 +216,15 @@ pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> ChunkMesh {
                 for (index, face) in FACES.iter().enumerate() {
                     let neighbour = blocks.block(position + face.normal);
                     if block == Block::Water && neighbour == Block::Air {
-                        push_face(&mut water, index, local, Tile::Water, false, [0; 4]);
+                        push_face(&mut water, index, local, Tile::Water, false, [0; 4], false);
                     } else if block.is_solid() && !neighbour.is_solid() {
                         let tile = Tile::for_face(block, face.normal);
                         let turned = quarter_turned(block, face.normal);
                         let occlusion = face_occlusion(&blocks, position, face);
-                        push_face(&mut opaque, index, local, tile, turned, occlusion);
+                        // The world's floor looks down into the void, which isn't a cave even with the whole world over it.
+                        let in_front = position + face.normal;
+                        let cave = neighbour == Block::Air && in_front.y >= 0 && blocks.roofed(in_front);
+                        push_face(&mut opaque, index, local, tile, turned, occlusion, cave);
                     }
                 }
             }
@@ -225,13 +255,14 @@ fn face_occlusion(blocks: &Snapshot, position: IVec3, face: &Face) -> [usize; 4]
 }
 
 /// `local` is the block's position inside its chunk. A `turned` face gives each corner the next
-/// corner's texture coordinates, which turns the texture without touching positions or AO.
-fn push_face(mesh: &mut Mesh, face: usize, local: IVec3, tile: Tile, turned: bool, occlusion: [usize; 4]) {
+/// corner's texture coordinates, which turns the texture without touching positions or AO. A `cave` face looks into a cave.
+fn push_face(mesh: &mut Mesh, face: usize, local: IVec3, tile: Tile, turned: bool, occlusion: [usize; 4], cave: bool) {
     let base = u16::try_from(mesh.vertices.len()).expect("a chunk has at most 49,152 vertices");
     for (corner_index, (corner, occluders)) in FACES[face].corners.iter().zip(occlusion).enumerate() {
         let position = local + IVec3::from_array(*corner);
         let texture_corner = (corner_index + usize::from(turned)) % 4;
-        mesh.vertices.push(Vertex::new(position, face, texture_corner, occluders, tile));
+        mesh.vertices
+            .push(Vertex::new(position, face, texture_corner, occluders, tile, cave));
     }
     // Split the quad along the diagonal whose ends are equally lit, otherwise the darkness
     // interpolates across the wrong triangle and shows a visible crease.
@@ -289,11 +320,11 @@ mod tests {
 
     #[test]
     fn vertex_fields_pack_without_overlapping() {
-        let Vertex(packed) = Vertex::new(IVec3::new(16, 3, 9), 5, 3, 2, Tile::Cobblestone);
+        let Vertex(packed) = Vertex::new(IVec3::new(16, 3, 9), 5, 3, 2, Tile::Cobblestone, true);
         let field = |shift: u32, bits: u32| (packed >> shift) & ((1 << bits) - 1);
         assert_eq!([field(0, 5), field(5, 5), field(10, 5)], [16, 3, 9]);
         assert_eq!([field(15, 3), field(18, 2), field(20, 2)], [5, 3, 2]);
-        assert_eq!(packed >> 22, Tile::Cobblestone as u32);
+        assert_eq!([field(22, 8), packed >> 30], [Tile::Cobblestone as u32, 1]);
     }
 
     fn texture_corners(mesh: &Mesh) -> Vec<u32> {
@@ -386,7 +417,8 @@ mod tests {
 
     /// Hashes the meshes of every chunk of a small generated world, recorded before chunks could
     /// be stored as one block and before meshing skipped any, so neither changed what is drawn, and
-    /// recorded again when caves were carved into it.
+    /// recorded again when caves were carved into it. Faces were then flagged when they look into a cave; with that bit left out
+    /// the hash was still the one before.
     #[test]
     fn meshes_of_a_generated_world_are_unchanged() {
         let extent = Extent {
@@ -414,7 +446,47 @@ mod tests {
                 }
             }
         }
-        assert_eq!(hash, 0xa586_bb82_f8a1_8b21);
+        assert_eq!(hash, 0x7665_f4ed_696d_d821);
+    }
+
+    /// Whether the face of the block at `position` facing `normal` looks into a cave. Its first corner tells it from the faces
+    /// beside it.
+    fn looks_into_cave(world: &World, position: IVec3, normal: IVec3) -> bool {
+        let mesh = build_chunk_mesh(world, position.div_euclid(IVec3::splat(CHUNK_SIZE as i32))).opaque;
+        let local = position.rem_euclid(IVec3::splat(CHUNK_SIZE as i32));
+        let face = FACES.iter().position(|face| face.normal == normal).expect("normal is one of FACES");
+        let corner = local + IVec3::from_array(FACES[face].corners[0]);
+        let Vertex(packed) = *mesh
+            .vertices
+            .iter()
+            .find(|&&Vertex(v)| {
+                (v >> 15) & 7 == face as u32
+                    && (v >> 18) & 3 == 0
+                    && IVec3::new((v & 31) as i32, (v >> 5 & 31) as i32, (v >> 10 & 31) as i32) == corner
+            })
+            .expect("the face is drawn");
+        packed >> 30 == 1
+    }
+
+    #[test]
+    fn faces_under_terrain_look_into_caves_and_under_trees_do_not() {
+        let mut world = World::empty(IVec3::new(1, 3, 1));
+        let floor = IVec3::new(3, 3, 3);
+        world.set_block(floor, Block::Stone);
+        world.set_block(floor + IVec3::X, Block::Stone);
+        // A roof two chunks up still makes a cave of the air under it; leaves don't.
+        world.set_block(IVec3::new(3, 40, 3), Block::Dirt);
+        world.set_block(IVec3::new(4, 6, 3), Block::OakLeaves);
+        assert!(looks_into_cave(&world, floor, IVec3::Y));
+        // Only the air straight under the roof is covered.
+        assert!(!looks_into_cave(&world, floor, IVec3::NEG_Z));
+        assert!(!looks_into_cave(&world, floor + IVec3::X, IVec3::Y));
+        assert!(!looks_into_cave(&world, floor + IVec3::X, IVec3::X));
+        // Nor is the void under the world, though the whole world is over it.
+        let bottom = IVec3::new(3, 0, 3);
+        world.set_block(bottom, Block::Stone);
+        assert!(looks_into_cave(&world, bottom, IVec3::Y));
+        assert!(!looks_into_cave(&world, bottom, IVec3::NEG_Y));
     }
 
     #[test]
