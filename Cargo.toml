@@ -36,6 +36,10 @@ too_many_lines = "warn"
 unwrap_used = "warn"
 
 # Dependencies are rarely stepped through but decode the textures and drive the GPU every frame,
-# so debug builds optimise them and leave only our own code unoptimised.
+# so debug builds optimise them. Our own code is lightly optimised too: unoptimised, building the
+# world before play took over 100 s instead of about 14. Debug info, debug assertions and overflow
+# checks stay on.
+[profile.dev]
+opt-level = 1
 [profile.dev.package."*"]
 opt-level = 2
