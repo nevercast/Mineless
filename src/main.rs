@@ -22,7 +22,7 @@ use loading::Loading;
 use meshed_area::MeshedArea;
 use render::{Camera, Frustum, Renderer};
 use sim::avatar::{Avatar, Skin};
-use sim::player::{JUMP_HEIGHTS, Player, TICK_RATE};
+use sim::player::{EYE_HEIGHT, JUMP_HEIGHTS, Player, TICK_RATE};
 use sim::world::{CHUNK_SIZE, ChunkSet, Extent, World};
 use sky::{DAY_TICKS, Sky};
 use spectator::Spectator;
@@ -168,6 +168,7 @@ impl ApplicationHandler for App {
                 }
                 let alpha = self.unsimulated * TICK_RATE;
                 let avatars: Vec<Avatar> = self.players.iter().map(|p| p.avatar(alpha)).collect();
+                renderer.outline(&targeted_blocks(&self.players, &self.world));
                 let day_fraction = ((self.ticks % DAY_TICKS) as f32 + alpha) / DAY_TICKS as f32;
                 // From inside rock the back faces of the rock are culled, so it is see-through and every cave around shows. The
                 // walk starts at the camera's chunk as open space and would stop at the solid chunks round it, so it waits until
@@ -229,6 +230,11 @@ fn seen_chunks(camera: &Camera, frustum: &Frustum, meshed: &MeshedArea) -> Chunk
         (lowest..=highest).contains(&chunk.y) && meshed_area::in_view_distance(camera.position.xz(), chunk) && frustum.contains_chunk(chunk)
     };
     visibility::visible_chunks(camera_chunk, |chunk| meshed.connections(chunk), in_view)
+}
+
+/// The blocks players are aiming at.
+fn targeted_blocks(players: &[Player], world: &World) -> Vec<IVec3> {
+    players.iter().filter_map(|player| Some(player.target(world)?.block)).collect()
 }
 
 /// Click to capture the mouse for looking around, Escape to give it back. Returns whether the
@@ -352,8 +358,6 @@ fn wander(player: &mut Player, world: &World, camera: Vec3) {
     }
 }
 
-/// Blocks from the feet to the eyes.
-const EYE_HEIGHT: f32 = 1.62;
 /// How close the camera must come before an idle player looks at it.
 const LOOK_RANGE: f32 = 8.0;
 /// How far the head turns from the body, side to side and up and down.

@@ -11,6 +11,7 @@ mod camera;
 mod chunk_meshes;
 mod font;
 mod loading;
+mod outline;
 mod post;
 mod skins;
 mod skybox;
@@ -22,6 +23,7 @@ use avatar::AvatarRenderer;
 use border::Border;
 use chunk_meshes::ChunkMeshes;
 use loading::LoadingScreen;
+use outline::Outline;
 use post::{HDR_FORMAT, PostProcess};
 use skybox::Skybox;
 use texture::BlockTextures;
@@ -95,6 +97,7 @@ pub struct Renderer {
     avatar: AvatarRenderer,
     skybox: Skybox,
     border: Border,
+    outline: Outline,
     loading: LoadingScreen,
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
@@ -162,6 +165,7 @@ impl Renderer {
         let avatar = AvatarRenderer::new(&device, &queue, &frame_layout);
         let skybox = Skybox::new(&device, &queue, &frame_layout);
         let border = Border::new(&device, &frame_layout, world);
+        let outline = Outline::new(&device, &frame_layout);
         let depth_view = create_depth_view(&device, &config);
         let post = PostProcess::new(&device, config.format, (config.width, config.height));
         let loading = LoadingScreen::new(&device, config.format);
@@ -180,6 +184,7 @@ impl Renderer {
             avatar,
             skybox,
             border,
+            outline,
             loading,
             frame_buffer,
             frame_bind_group,
@@ -191,6 +196,11 @@ impl Renderer {
     pub fn upload_chunk_mesh(&mut self, chunk: IVec3, mesh: &ChunkMesh) {
         self.chunk_meshes.insert(&self.device, chunk, &mesh.opaque);
         self.water_meshes.insert(&self.device, chunk, &mesh.water);
+    }
+
+    /// Outlines `blocks` from the next frame on, until called again.
+    pub fn outline(&mut self, blocks: &[IVec3]) {
+        self.outline.prepare(&self.device, &self.queue, blocks);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -328,6 +338,7 @@ impl Renderer {
                     drawn_chunks.insert(chunk);
                 }
                 self.avatar.draw(&mut pass, &self.frame_bind_group);
+                self.outline.draw(&mut pass, &self.frame_bind_group);
                 // The border is nearly always the farthest translucent thing, so it goes under water.
                 self.border.draw(&mut pass, &self.frame_bind_group);
 

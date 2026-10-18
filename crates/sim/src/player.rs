@@ -5,7 +5,7 @@ use glam::{BVec3, Vec2, Vec3};
 
 use crate::avatar::{Avatar, Pose, Skin};
 use crate::physics::Body;
-use crate::world::World;
+use crate::world::{Block, Hit, World};
 
 /// Simulation ticks per second, as in Minecraft.
 pub const TICK_RATE: f32 = 20.0;
@@ -21,6 +21,10 @@ const GRAVITY: f32 = 0.08;
 const AIR_DRAG: f32 = 0.98;
 /// Jump heights a player can choose from, in blocks. Minecraft's own jump peaks at about 1.25.
 pub const JUMP_HEIGHTS: std::ops::RangeInclusive<f32> = 0.5..=1.25;
+/// Blocks from the feet to the eyes.
+pub const EYE_HEIGHT: f32 = 1.62;
+/// How far from the eyes a player can reach a block, as in Minecraft.
+pub const REACH: f32 = 4.5;
 
 /// Everything whoever drives a player can ask of it. Read at the start of every tick.
 #[derive(Clone, Copy, Default)]
@@ -77,6 +81,20 @@ impl Player {
     /// Vertical speed in blocks per tick; up is positive.
     pub fn vertical_velocity(&self) -> f32 {
         self.fall_velocity
+    }
+
+    /// The block the player is looking at within reach, if any. The world border can't be aimed at, nor anything past it.
+    pub fn target(&self, world: &World) -> Option<Hit> {
+        let eye = self.body.position + Vec3::Y * EYE_HEIGHT;
+        let hit = world.raycast(eye, self.look_direction(), REACH)?;
+        (world.block(hit.block) != Block::WorldBorder).then_some(hit)
+    }
+
+    /// Unit vector the head looks along.
+    fn look_direction(&self) -> Vec3 {
+        let (sin_yaw, cos_yaw) = (self.controls.yaw + self.controls.head_yaw).sin_cos();
+        let (sin_pitch, cos_pitch) = self.controls.head_pitch.sin_cos();
+        Vec3::new(-sin_yaw * cos_pitch, sin_pitch, -cos_yaw * cos_pitch)
     }
 
     /// Advances one tick. Returns which axes collision cut short.
@@ -256,6 +274,40 @@ mod tests {
             }
             assert!(player.body.position.x > 11.0, "jumping {jumping}");
         }
+    }
+
+    #[test]
+    fn targets_the_block_the_head_looks_at() {
+        let mut world = floor();
+        world.set_block(IVec3::new(8, 2, 5), Block::Stone);
+        let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
+        // Facing -Z at eye height, the block three ahead and one up is in reach.
+        assert_eq!(
+            player.target(&world),
+            Some(Hit {
+                block: IVec3::new(8, 2, 5),
+                face: IVec3::Z
+            })
+        );
+        // Turning the head to the right and down onto the floor.
+        player.controls.head_yaw = -std::f32::consts::FRAC_PI_2;
+        player.controls.head_pitch = -std::f32::consts::FRAC_PI_4;
+        assert_eq!(
+            player.target(&world).map(|hit| (hit.block, hit.face)),
+            Some((IVec3::new(10, 0, 8), IVec3::Y))
+        );
+        // Straight up there is nothing.
+        player.controls.head_pitch = std::f32::consts::FRAC_PI_2;
+        assert_eq!(player.target(&world), None);
+    }
+
+    #[test]
+    fn the_world_border_cannot_be_targeted() {
+        let mut world = floor();
+        world.set_block(IVec3::new(8, 2, 6), Block::WorldBorder);
+        world.set_block(IVec3::new(8, 2, 5), Block::Stone);
+        let player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
+        assert_eq!(player.target(&world), None);
     }
 
     #[test]
