@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -23,13 +23,13 @@ use agent::Agent;
 use glam::{IVec2, IVec3, Vec3, Vec3Swizzles, vec3};
 use loading::Loading;
 use meshed_area::MeshedArea;
-use render::{Camera, Frustum, Renderer};
+use render::{Camera, Frustum, ListLine, Renderer};
 use sim::avatar::{Avatar, Skin};
 use sim::game::Game;
 use sim::player::{EYE_HEIGHT, JUMP_HEIGHTS, Player, TICK_RATE};
 use sim::world::{Block, CHUNK_SIZE, ChunkSet, Extent, World};
 use sky::{DAY_TICKS, Sky};
-use spectator::Spectator;
+use spectator::{AgentList, Spectator};
 
 struct App {
     /// Players are empty until the world is loaded, since they stand on it.
@@ -53,6 +53,7 @@ struct App {
     renderer: Option<Renderer>,
     camera: Camera,
     spectator: Spectator,
+    agent_list: AgentList,
     mouse_captured: bool,
     /// Whether chunks walled off from the camera by terrain are left undrawn. `CULLING_KEY` turns
     /// it off and on, to compare.
@@ -96,6 +97,27 @@ impl Timings {
     }
 }
 
+impl App {
+    /// Acts on any key but Escape, which needs the window.
+    fn key(&mut self, event: &KeyEvent) {
+        self.spectator.key(event);
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return;
+        };
+        if event.state != ElementState::Pressed || event.repeat {
+            return;
+        }
+        self.culling ^= code == CULLING_KEY;
+        self.xray ^= code == XRAY_KEY;
+        if let Some(index) = self.agent_list.key(code, self.agents.len())
+            && let Some(player) = agent_players_of(&self.game).get(index)
+        {
+            spectator::face(&mut self.camera, player.controls.yaw);
+            look_back_at(&mut self.camera, &self.game.world, eyes(player, 1.0));
+        }
+    }
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -119,10 +141,7 @@ impl ApplicationHandler for App {
                 if event.physical_key == PhysicalKey::Code(KeyCode::Escape) {
                     self.mouse_captured = set_mouse_capture(window, false);
                 }
-                let pressed = |key| event.physical_key == PhysicalKey::Code(key) && event.state == ElementState::Pressed && !event.repeat;
-                self.culling ^= pressed(CULLING_KEY);
-                self.xray ^= pressed(XRAY_KEY);
-                self.spectator.key(&event);
+                self.key(&event);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -158,6 +177,9 @@ impl ApplicationHandler for App {
                 let now = Instant::now();
                 let seconds = (now - self.last_frame).as_secs_f32();
                 self.last_frame = now;
+                if self.spectator.is_moving() {
+                    self.agent_list.stop_following();
+                }
                 self.spectator.update(&mut self.camera, seconds);
                 let camera = self.camera.position.xz();
                 self.meshed.update(&mut self.game.world, renderer, camera, MESHING_SLICE);
@@ -172,6 +194,7 @@ impl ApplicationHandler for App {
                     self.timings.tick_seconds += tick_start.elapsed().as_secs_f32();
                 }
                 let alpha = self.unsimulated * TICK_RATE;
+                renderer.list(watch_agents(&self.agent_list, &self.agents, &self.game, &mut self.camera, alpha));
                 let avatars: Vec<Avatar> = self.game.players.iter().map(|p| p.avatar(alpha)).collect();
                 renderer.outline(&targeted_blocks(&self.game));
                 let day_fraction = ((self.ticks % DAY_TICKS) as f32 + alpha) / DAY_TICKS as f32;
@@ -392,6 +415,42 @@ fn tick(game: &mut Game, agents: &mut [(Agent, Skin)], camera: Vec3) {
     }
 }
 
+/// The players the agents drive, in the agents' order.
+fn agent_players_of(game: &Game) -> &[Player] {
+    game.players.get(TEST_PLAYERS..).unwrap_or_default()
+}
+
+/// Keeps the camera on the agent being followed, and lists the agents with how far they are from the camera, `alpha` of the
+/// way from the last tick to this one.
+fn watch_agents(list: &AgentList, agents: &[(Agent, Skin)], game: &Game, camera: &mut Camera, alpha: f32) -> Vec<ListLine> {
+    let players = agent_players_of(game);
+    if let Some(player) = list.following().and_then(|index| players.get(index)) {
+        look_back_at(camera, &game.world, eyes(player, alpha));
+    }
+    let distances: Vec<(&str, f32)> = agents
+        .iter()
+        .zip(players)
+        .map(|((agent, _), player)| (agent.name(), player.avatar(alpha).position.distance(camera.position)))
+        .collect();
+    list.lines(&distances)
+}
+
+/// Puts the camera back from `focus` along its view, as far as `FOLLOW_DISTANCE` but in front of any block in the way.
+fn look_back_at(camera: &mut Camera, world: &World, focus: Vec3) {
+    // Steps back a tenth of a block at a time, and keeps a tenth clear of the block it meets so the near plane doesn't cut it.
+    let back = -camera.forward();
+    let steps = (spectator::FOLLOW_DISTANCE * 10.0) as u32;
+    let clear = (1..=steps)
+        .find(|&step| world.block((focus + back * (step as f32 / 10.0)).floor().as_ivec3()).is_solid())
+        .map_or(spectator::FOLLOW_DISTANCE, |step| (step as f32 - 2.0).max(0.0) / 10.0);
+    spectator::orbit(camera, focus, clear);
+}
+
+/// Where a player's eyes are, `alpha` of the way from the last tick to this one.
+fn eyes(player: &Player, alpha: f32) -> Vec3 {
+    player.avatar(alpha).position + Vec3::Y * EYE_HEIGHT
+}
+
 /// The agents' players, gathered in a ring in view of the start camera.
 fn agent_players(world: &World, skins: &[Skin]) -> Vec<Player> {
     let spot = START_POSITION + (START_TARGET - START_POSITION).with_y(0.0).normalize() * AGENTS_DISTANCE;
@@ -494,6 +553,7 @@ fn main() {
         window: None,
         renderer: None,
         spectator: Spectator::default(),
+        agent_list: AgentList::default(),
         mouse_captured: false,
         culling: true,
         xray: false,

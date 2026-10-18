@@ -108,6 +108,10 @@ impl Agent {
         })
     }
 
+    pub fn name(&self) -> &str {
+        &self.store.data().name
+    }
+
     /// Gives the script its turn for this tick, before the game ticks. A script that fails is stopped and its player left
     /// standing still, and the error is returned once.
     pub fn turn(&mut self, game: &mut Game) -> Result<(), Error> {

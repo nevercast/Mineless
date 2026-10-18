@@ -10,8 +10,8 @@ mod border;
 mod camera;
 mod chunk_meshes;
 mod font;
-mod loading;
 mod outline;
+mod overlay;
 mod post;
 mod skins;
 mod skybox;
@@ -22,8 +22,9 @@ pub use camera::{Camera, Frustum};
 use avatar::AvatarRenderer;
 use border::Border;
 use chunk_meshes::ChunkMeshes;
-use loading::LoadingScreen;
 use outline::Outline;
+pub use overlay::ListLine;
+use overlay::Overlay;
 use post::{HDR_FORMAT, PostProcess};
 use skybox::Skybox;
 use texture::BlockTextures;
@@ -98,7 +99,9 @@ pub struct Renderer {
     skybox: Skybox,
     border: Border,
     outline: Outline,
-    loading: LoadingScreen,
+    overlay: Overlay,
+    /// Lines drawn over the top left of the world, if any.
+    list: Vec<ListLine>,
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
@@ -168,7 +171,7 @@ impl Renderer {
         let outline = Outline::new(&device, &frame_layout);
         let depth_view = create_depth_view(&device, &config);
         let post = PostProcess::new(&device, config.format, (config.width, config.height));
-        let loading = LoadingScreen::new(&device, config.format);
+        let overlay = Overlay::new(&device, config.format);
         Self {
             surface,
             device,
@@ -185,7 +188,8 @@ impl Renderer {
             skybox,
             border,
             outline,
-            loading,
+            overlay,
+            list: Vec::new(),
             frame_buffer,
             frame_bind_group,
             texture_bind_group: textures.bind_group,
@@ -201,6 +205,11 @@ impl Renderer {
     /// Outlines `blocks` from the next frame on, until called again.
     pub fn outline(&mut self, blocks: &[IVec3]) {
         self.outline.prepare(&self.device, &self.queue, blocks);
+    }
+
+    /// Draws `lines` over the top left of the world from the next frame on, until called again; none draws nothing.
+    pub fn list(&mut self, lines: Vec<ListLine>) {
+        self.list = lines;
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -240,7 +249,7 @@ impl Renderer {
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let size = Vec2::new(self.config.width as f32, self.config.height as f32);
-        self.loading.draw(&self.device, &mut encoder, &view, size, progress, detail);
+        self.overlay.draw_loading(&self.device, &mut encoder, &view, size, progress, detail);
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
     }
@@ -360,6 +369,10 @@ impl Renderer {
             }
         }
         self.post.draw(&mut encoder, &view);
+        if !self.list.is_empty() {
+            let size = Vec2::new(self.config.width as f32, self.config.height as f32);
+            self.overlay.draw_list(&self.device, &mut encoder, &view, size, &self.list);
+        }
         self.queue.submit([encoder.finish()]);
         // Waiting for the GPU to finish puts its work in the draw time. It gives up overlapping
         // one frame's GPU work with the next frame's CPU work, which costs nothing while vsync
