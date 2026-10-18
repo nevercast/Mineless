@@ -153,7 +153,7 @@ impl ApplicationHandler for App {
                 self.last_frame = now;
                 self.spectator.update(&mut self.camera, seconds);
                 let camera = self.camera.position.xz();
-                self.meshed.update(&self.world, renderer, camera, MESHING_SLICE);
+                self.meshed.update(&mut self.world, renderer, camera, MESHING_SLICE);
                 // Simulate in fixed ticks; a long stall drops time rather than ticking to catch up.
                 self.unsimulated = (self.unsimulated + seconds).min(MAX_CATCH_UP);
                 while self.unsimulated >= 1.0 / TICK_RATE {

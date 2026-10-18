@@ -42,11 +42,19 @@ impl MeshedArea {
         }
     }
 
-    /// Drops meshes that have fallen out of range of `camera`, then builds missing ones in range,
-    /// nearest first, on a worker thread per core until `budget` has passed. Returns how many
-    /// columns in range are still missing.
-    pub fn update(&mut self, world: &World, renderer: &mut Renderer, camera: Vec2, budget: Duration) -> usize {
+    /// Rebuilds the meshes block edits have changed, drops meshes that have fallen out of range of `camera`, then builds missing
+    /// ones in range, nearest first, on a worker thread per core until `budget` has passed. Returns how many columns in range are
+    /// still missing.
+    pub fn update(&mut self, world: &mut World, renderer: &mut Renderer, camera: Vec2, budget: Duration) -> usize {
         let start = Instant::now();
+        // An edit remeshes a few chunks at most, which is quicker done here than handed to workers.
+        for chunk in world.take_edits() {
+            if self.levels.contains(&chunk.y) && self.meshed.contains(&chunk.xz()) {
+                renderer.upload_chunk_mesh(chunk, &mesher::build_chunk_mesh(world, chunk));
+                self.connections.insert(chunk, visibility::connections(world, chunk));
+            }
+        }
+        let world = &*world;
         for column in self.drop_far(camera) {
             for chunk in self.chunks(column) {
                 renderer.upload_chunk_mesh(chunk, &ChunkMesh::default());
