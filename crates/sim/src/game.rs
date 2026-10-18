@@ -67,9 +67,16 @@ mod tests {
     }
 
     #[test]
-    fn stairs_are_placed_stepping_up_away_from_the_builder() {
+    fn stairs_are_placed_stepping_up_the_way_the_builder_faces() {
         let mut game = builder(Block::OakStairs(Facing::North));
         game.tick();
         assert_eq!(game.world.block(IVec3::new(10, 1, 8)), Block::OakStairs(Facing::East));
+        // Facing south with the head turned back to the same block, it places stairs facing south.
+        let mut game = builder(Block::OakStairs(Facing::North));
+        let controls = &mut game.players[0].controls;
+        controls.yaw -= FRAC_PI_2;
+        controls.head_yaw = FRAC_PI_2;
+        game.tick();
+        assert_eq!(game.world.block(IVec3::new(10, 1, 8)), Block::OakStairs(Facing::South));
     }
 }
