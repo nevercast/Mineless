@@ -399,8 +399,6 @@ enum Layer {
     /// Depth tested but not written, blended over the scene colour and seen from both sides, and
     /// never glowing.
     Translucent,
-    /// Lines, depth tested but not written and blended over the scene colour.
-    Lines,
     /// Drawn through everything from both sides, adding to the scene colour, using the shader's `vs_xray` and `fs_xray`.
     XRay,
 }
@@ -436,7 +434,7 @@ fn scene_pipeline(
         operation: wgpu::BlendOperation::Add,
     };
     let blend = match layer {
-        Layer::Translucent | Layer::Lines => Some(wgpu::BlendState::ALPHA_BLENDING),
+        Layer::Translucent => Some(wgpu::BlendState::ALPHA_BLENDING),
         Layer::XRay => Some(wgpu::BlendState {
             color: additive,
             alpha: additive,
@@ -470,11 +468,6 @@ fn scene_pipeline(
             buffers: vertex_buffers,
         },
         primitive: wgpu::PrimitiveState {
-            topology: if layer == Layer::Lines {
-                wgpu::PrimitiveTopology::LineList
-            } else {
-                wgpu::PrimitiveTopology::TriangleList
-            },
             cull_mode: matches!(layer, Layer::Opaque | Layer::Background).then_some(wgpu::Face::Back),
             ..Default::default()
         },
