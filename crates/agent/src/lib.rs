@@ -7,11 +7,12 @@ use std::fmt;
 use glam::{IVec3, Vec2};
 use sim::crafting::{self, RECIPES, Want};
 use sim::game::Game;
+use sim::inventory::SLOTS;
 use sim::player::{Controls, Player};
 use sim::world::{Axis, Block, CHUNK_SIZE, Facing, World};
 use wasmi::{
-    Caller, Config, Engine, Error, Extern, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc, TypedResumableCall,
-    TypedResumableCallHostTrap, TypedResumableCallOutOfFuel, errors::HostError,
+    Caller, CompilationMode, Config, Engine, Error, Extern, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc,
+    TypedResumableCall, TypedResumableCallHostTrap, TypedResumableCallOutOfFuel, errors::HostError,
 };
 
 /// Fuel a script gets each tick, roughly one per WASM instruction. Enough for a script to look around and decide, small enough
@@ -116,6 +117,9 @@ impl Agent {
     pub fn load(wasm: &[u8], player: usize, name: String) -> Result<Agent, Error> {
         let mut config = Config::default();
         config.consume_fuel(true);
+        // Translating a function lazily, on its first call, charges fuel that a call can't be paused for, which stops a script
+        // that first calls a big function late in a tick. Translating the whole script up front charges nothing.
+        config.compilation_mode(CompilationMode::Eager);
         let engine = Engine::new(&config);
         let module = Module::new(&engine, wasm)?;
         let host = Host {
@@ -192,6 +196,7 @@ fn linker(engine: &Engine) -> Result<Linker<Host>, Error> {
         .func_wrap("mineless", "crafts", crafts)?
         .func_wrap("mineless", "craft", craft)?
         .func_wrap("mineless", "want", want)?
+        .func_wrap("mineless", "swap_slots", swap_slots)?
         .func_wrap("mineless", "log", log)?;
     Ok(linker)
 }
@@ -376,6 +381,17 @@ fn want(mut caller: Caller<'_, Host>, wanted: u32, amount: u32, missing: u32) ->
     }
 }
 
+/// Swaps two inventory slots and returns 1, or returns 0 if either is past the end.
+fn swap_slots(mut caller: Caller<'_, Host>, a: u32, b: u32) -> u32 {
+    let host = caller.data_mut();
+    let slots = 0..SLOTS as u32;
+    if !slots.contains(&a) || !slots.contains(&b) {
+        return 0;
+    }
+    host.game.players[host.player].inventory.swap(a as usize, b as usize);
+    1
+}
+
 fn log(caller: Caller<'_, Host>, address: u32, len: u32) -> Result<(), Error> {
     let mut text = vec![0; len as usize];
     memory(&caller)?
@@ -464,6 +480,10 @@ mod tests {
     fn layouts_match_the_script_api() {
         assert_eq!(size_of::<agent_api::State>(), 15 * 4);
         assert_eq!(size_of::<agent_api::Controls>(), 9 * 4);
+        assert_eq!(
+            (agent_api::EYE_HEIGHT, agent_api::REACH),
+            (sim::player::EYE_HEIGHT, sim::player::REACH)
+        );
         assert_eq!(wire(Block::OakLog(Axis::X)), wire(Block::OakLog(Axis::Z)));
         assert_eq!(wire(Block::OakStairs(Facing::East)), wire(Block::OakStairs(Facing::West)));
         for number in 0..=wire(Block::CraftingTable) {

@@ -50,6 +50,11 @@ impl Inventory {
         count
     }
 
+    /// Swaps what two slots hold, as moving stacks round the inventory does.
+    pub fn swap(&mut self, a: usize, b: usize) {
+        self.slots.swap(a, b);
+    }
+
     /// How many of `block` it holds across every slot.
     pub fn count(&self, block: Block) -> u32 {
         self.slots

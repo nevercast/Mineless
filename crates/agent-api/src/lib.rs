@@ -120,6 +120,8 @@ pub const SLOTS: u32 = 36;
 pub const HOTBAR: u32 = 9;
 /// How far from its feet an actor sees blocks.
 pub const SIGHT: i32 = 64;
+/// Blocks from the feet up to the eyes, where it looks from.
+pub const EYE_HEIGHT: f32 = 1.62;
 /// How far from its eyes an actor reaches: the blocks it aims at, and a crafting table it crafts at.
 pub const REACH: f32 = 4.5;
 
@@ -163,6 +165,7 @@ mod calls {
             pub fn crafts(found: *mut WireCraft, capacity: u32) -> u32;
             pub fn craft(output: u32, times: u32) -> u32;
             pub fn want(block: u32, amount: u32, missing: *mut Stack) -> u32;
+            pub fn swap_slots(a: u32, b: u32) -> u32;
             pub fn log(text: *const u8, len: usize);
         }
     }
@@ -247,6 +250,12 @@ mod calls {
             3 => Want::NeedTable,
             _ => Want::NoRoom,
         }
+    }
+
+    /// Swaps what two inventory slots hold, to bring a stack into the hotbar. False if either slot is past the end.
+    pub fn swap_slots(a: u32, b: u32) -> bool {
+        // SAFETY: takes plain numbers only.
+        unsafe { host::swap_slots(a, b) != 0 }
     }
 
     /// Writes a line to the game's console.

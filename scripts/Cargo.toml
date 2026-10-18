@@ -1,7 +1,7 @@
 # Scripts are built for wasm32-unknown-unknown, so they are a workspace of their own: a native build of the game's workspace
 # can't link the functions the game provides.
 [workspace]
-members = ["pillar", "wander"]
+members = ["house", "pillar", "wander"]
 resolver = "3"
 
 [profile.release]
