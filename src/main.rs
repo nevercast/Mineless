@@ -1,3 +1,4 @@
+mod agents;
 mod avatar;
 mod loading;
 mod meshed_area;
@@ -8,7 +9,7 @@ mod spectator;
 mod visibility;
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use agent::Agent;
-use glam::{IVec2, IVec3, Vec2, Vec3, Vec3Swizzles, vec3};
+use glam::{IVec2, IVec3, Vec3, Vec3Swizzles, vec3};
 use loading::Loading;
 use meshed_area::MeshedArea;
 use render::{Camera, Frustum, Renderer};
@@ -33,8 +34,8 @@ use spectator::Spectator;
 struct App {
     /// Players are empty until the world is loaded, since they stand on it.
     game: Game,
-    /// The script driving the player after the test players, if one was given.
-    agent: Option<Agent>,
+    /// The agents from the agents file, which drive the players after the test players, each with its player's skin.
+    agents: Vec<(Agent, Skin)>,
     seed: u32,
     /// The world still being built, until play starts.
     loading: Option<Loading>,
@@ -138,9 +139,8 @@ impl ApplicationHandler for App {
                     self.loading = None;
                     eprintln!("Playable after {:.2} s", self.launched.elapsed().as_secs_f32());
                     self.game.players = test_players(&self.game.world);
-                    if self.agent.is_some() {
-                        self.game.players.push(scripted_player(&self.game.world));
-                    }
+                    let skins: Vec<Skin> = self.agents.iter().map(|&(_, skin)| skin).collect();
+                    self.game.players.extend(agent_players(&self.game.world, &skins));
                     let ground = self.game.world.column_top(START_POSITION.x as i32, START_POSITION.z as i32);
                     self.camera = start_camera(ground);
                     self.last_frame = Instant::now();
@@ -167,7 +167,7 @@ impl ApplicationHandler for App {
                     self.unsimulated -= 1.0 / TICK_RATE;
                     self.ticks += 1;
                     let tick_start = Instant::now();
-                    tick(&mut self.game, self.agent.as_mut(), self.camera.position);
+                    tick(&mut self.game, &mut self.agents, self.camera.position);
                     self.timings.ticks += 1;
                     self.timings.tick_seconds += tick_start.elapsed().as_secs_f32();
                 }
@@ -271,21 +271,23 @@ const WORLD: Extent = Extent {
 /// The world unless `--seed` picks another. This one shows sea, beach, uplands, forest and a
 /// floating lump from the start view.
 const SEED: u32 = 142;
-const USAGE: &str = "usage: mineless [--seed <u32>] [--agent <script.wasm>]";
+const USAGE: &str = "usage: mineless [--seed <u32>] [--agents <file.toml>]";
+/// Read for the agents if `--agents` doesn't name another file, and fine to be missing.
+const AGENTS_FILE: &str = "agents.toml";
 
 #[derive(PartialEq, Debug)]
 struct Options {
     seed: u32,
-    /// A script compiled to WASM to drive one more player.
-    agent: Option<PathBuf>,
+    /// The agents file, if one was named.
+    agents: Option<PathBuf>,
 }
 
 /// The options from the command-line arguments, not counting the program name.
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
-    let mut options = Options { seed: SEED, agent: None };
+    let mut options = Options { seed: SEED, agents: None };
     while let Some(arg) = args.next() {
         let value = match arg.as_str() {
-            "--seed" | "--agent" => args.next().ok_or(format!("{arg} needs a value"))?,
+            "--seed" | "--agents" => args.next().ok_or(format!("{arg} needs a value"))?,
             _ => return Err(format!("unknown argument {arg:?}")),
         };
         if arg == "--seed" {
@@ -293,7 +295,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 .parse()
                 .map_err(|_| format!("--seed {value:?} is not a whole number from 0 to {}", u32::MAX))?;
         } else {
-            options.agent = Some(value.into());
+            options.agents = Some(value.into());
         }
     }
     Ok(options)
@@ -338,12 +340,13 @@ const START_TICKS: u64 = DAY_TICKS * 3 / 8;
 const PLAYER_SPACING: i32 = 64;
 const PLAYERS_ACROSS: i32 = 5;
 const TEST_PLAYERS: usize = (PLAYERS_ACROSS * PLAYERS_ACROSS) as usize;
-/// Blocks from the start camera, toward where it looks, that a scripted player starts.
-const SCRIPTED_PLAYER_DISTANCE: f32 = 6.0;
+/// Blocks from the start camera, toward where it looks, that the agents gather, and how far round that spot they stand.
+const AGENTS_DISTANCE: f32 = 6.0;
+const AGENTS_RADIUS: f32 = 3.0;
 
-/// A grid of players round the origin, skins in turn, so ticks have a crowd to simulate. The
-/// first builds a pillar under itself up out of the sea, the second drops from twelve blocks up and
-/// then stands idle, the fifth digs at the ground in front of it, and the rest walk.
+/// A grid of players round the origin, skins in turn, so ticks have a crowd to simulate. The first builds a pillar under itself up
+/// out of the sea, the second drops from twelve blocks up, the fifth digs at the ground in front of it, and the rest stand
+/// still.
 fn test_players(world: &World) -> Vec<Player> {
     (0..PLAYERS_ACROSS)
         .flat_map(|x| (0..PLAYERS_ACROSS).map(move |z| IVec2::new(x, z)))
@@ -363,8 +366,6 @@ fn test_players(world: &World) -> Vec<Player> {
             } else if index == 4 {
                 player.controls.attack = true;
                 player.controls.head_pitch = DIG_PITCH;
-            } else if index > 1 {
-                player.controls.walk = Vec2::Y;
             }
             player
         })
@@ -377,45 +378,44 @@ const DIG_PITCH: f32 = -55f32.to_radians();
 /// from where the first test player stands.
 const PILLAR_HEIGHT: u8 = 24;
 
-/// Advances the game a tick: the script takes its turn, everyone moves, and the stand-in agent decides what the test players
+/// Advances the game a tick: the agents take their turns, everyone moves, and the stand-in agent decides what the test players
 /// do next.
-fn tick(game: &mut Game, agent: Option<&mut Agent>, camera: Vec3) {
-    if let Some(agent) = agent
-        && let Err(error) = agent.turn(game)
-    {
-        eprintln!("The script stopped: {error}");
+fn tick(game: &mut Game, agents: &mut [(Agent, Skin)], camera: Vec3) {
+    for (agent, _) in agents {
+        if let Err(error) = agent.turn(game) {
+            eprintln!("A script stopped: {error}");
+        }
     }
     game.tick();
     for player in game.players.iter_mut().take(TEST_PLAYERS) {
-        wander(player, camera);
+        stand_in(player, camera);
     }
 }
 
-/// The player a script drives, standing in view of the start camera.
-fn scripted_player(world: &World) -> Player {
-    let spot = START_POSITION + (START_TARGET - START_POSITION).with_y(0.0).normalize() * SCRIPTED_PLAYER_DISTANCE;
-    Player::new(ground_at(world, spot.x as i32, spot.z as i32), 0.0, Skin::Player)
+/// The agents' players, gathered in a ring in view of the start camera.
+fn agent_players(world: &World, skins: &[Skin]) -> Vec<Player> {
+    let spot = START_POSITION + (START_TARGET - START_POSITION).with_y(0.0).normalize() * AGENTS_DISTANCE;
+    let radius = if skins.len() > 1 { AGENTS_RADIUS } else { 0.0 };
+    (0..)
+        .zip(skins)
+        .map(|(index, &skin)| {
+            let angle = index as f32 * TAU / skins.len() as f32;
+            let place = spot + vec3(angle.sin(), 0.0, angle.cos()) * radius;
+            Player::new(ground_at(world, place.x.floor() as i32, place.z.floor() as i32), angle, skin)
+        })
+        .collect()
 }
 
-/// Stand-in agent: drives a player only through its controls, as a real agent will. Walkers walk
-/// forward, jump at anything in the way, and turn away if it's still blocking on the way back
-/// down. Diggers keep digging whatever they look at, until nothing is left in reach. Builders look
-/// straight down and jump while they have blocks, placing one under their feet each jump. Everyone
-/// else stands still and watches the spectator's camera when it comes close.
-fn wander(player: &mut Player, camera: Vec3) {
-    let blocked = player.blocked();
+/// Stand-in agent for the test players: drives a player only through its controls, as a real agent will. Diggers keep digging
+/// whatever they look at, until nothing is left in reach. Builders look straight down and jump while they have blocks, placing
+/// one under their feet each jump. Everyone else stands still and watches the spectator's camera when it comes close.
+fn stand_in(player: &mut Player, camera: Vec3) {
     if player.controls.place {
         if player.is_on_ground() && player.inventory.slot(0).is_some() {
             player.controls.jump = Some(*JUMP_HEIGHTS.end());
         }
-    } else if player.controls.walk == Vec2::ZERO && !player.controls.attack {
+    } else if !player.controls.attack {
         look_toward(player, camera);
-    } else if blocked.x || blocked.z {
-        if player.is_on_ground() {
-            player.controls.jump = Some(*JUMP_HEIGHTS.end());
-        } else if player.vertical_velocity() < 0.0 {
-            player.controls.yaw += 100f32.to_radians();
-        }
     }
 }
 
@@ -447,27 +447,42 @@ fn look_toward(player: &mut Player, target: Vec3) {
     controls.head_pitch += (pitch - controls.head_pitch) * HEAD_EASE;
 }
 
+/// The agents in the named agents file, or in `AGENTS_FILE` if there is one. An agent whose script won't load is left out, so a
+/// sample file still runs before its scripts are built.
+fn load_agents(named: Option<&Path>) -> Result<Vec<(Agent, Skin)>, String> {
+    let path = named.unwrap_or(Path::new(AGENTS_FILE));
+    if named.is_none() && !path.exists() {
+        return Ok(Vec::new());
+    }
+    let specs = agents::read(path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
+    let mut loaded = Vec::new();
+    for spec in specs {
+        let script = std::fs::read(&spec.script).map_err(|error| error.to_string());
+        match script.and_then(|wasm| Agent::load(&wasm, TEST_PLAYERS + loaded.len(), spec.name.clone()).map_err(|error| error.to_string()))
+        {
+            Ok(agent) => loaded.push((agent, spec.skin)),
+            Err(error) => eprintln!("Leaving {} out: can't load {}: {error}", spec.name, spec.script.display()),
+        }
+    }
+    Ok(loaded)
+}
+
 fn main() {
     env_logger::init();
-    let Options { seed, agent } = parse_args(std::env::args().skip(1)).unwrap_or_else(|error| {
+    let Options { seed, agents } = parse_args(std::env::args().skip(1)).unwrap_or_else(|error| {
         eprintln!("{error}\n{USAGE}");
         std::process::exit(2);
     });
-    // Loaded before the world is built, so a bad script is reported straight away.
-    let agent = agent.map(|path| {
-        let loaded = std::fs::read(&path)
-            .map_err(|error| error.to_string())
-            .and_then(|wasm| Agent::load(&wasm, TEST_PLAYERS).map_err(|error| error.to_string()));
-        loaded.unwrap_or_else(|error| {
-            eprintln!("Can't load {}: {error}", path.display());
-            std::process::exit(2);
-        })
+    // Loaded before the world is built, so mistakes are reported straight away.
+    let agents = load_agents(agents.as_deref()).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(2);
     });
     let launched = Instant::now();
     let event_loop = EventLoop::new().expect("create event loop");
     let mut app = App {
         game: Game::default(),
-        agent,
+        agents,
         seed,
         loading: Some(Loading::new(WORLD, seed, START_POSITION.xz())),
         meshed: MeshedArea::new(WORLD),
@@ -508,13 +523,13 @@ mod tests {
     }
 
     #[test]
-    fn agent_comes_from_its_flag_alongside_the_seed() {
-        assert_eq!(options_from(&[]).map(|options| options.agent), Ok(None));
+    fn agents_file_comes_from_its_flag_alongside_the_seed() {
+        assert_eq!(options_from(&[]).map(|options| options.agents), Ok(None));
         assert_eq!(
-            options_from(&["--agent", "pillar.wasm", "--seed", "7"]),
+            options_from(&["--agents", "crowd.toml", "--seed", "7"]),
             Ok(Options {
                 seed: 7,
-                agent: Some("pillar.wasm".into())
+                agents: Some("crowd.toml".into())
             })
         );
     }
@@ -527,7 +542,8 @@ mod tests {
             &["--seed", "4294967296"],
             &["--seed", "abc"],
             &["--size", "3"],
-            &["--agent"],
+            &["--agents"],
+            &["--agent", "pillar.wasm"],
             &["108"],
         ] {
             assert!(seed_from(args).is_err(), "{args:?}");
@@ -544,30 +560,6 @@ mod tests {
         for camera in [low, high] {
             assert!((camera.yaw - framed.yaw).abs() < 1e-6);
             assert!((camera.pitch - framed.pitch).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn wanderer_stays_inside_the_world_border() {
-        // Small enough to generate quickly in a debug build, with the outer players starting
-        // 32 blocks from its border.
-        let small_world = Extent {
-            half_width: 160,
-            height: WORLD.height,
-        };
-        let world = sim::world::terrain::generate(small_world, SEED);
-        let camera = ground_at(&world, 0, 0);
-        let players = test_players(&world);
-        let mut game = Game { world, players };
-        let (low, high) = (small_world.min().as_vec3() + 1.0, small_world.max().as_vec3() - 1.0);
-        // An hour of simulation.
-        for _ in 0..(3600.0 * TICK_RATE) as u32 {
-            tick(&mut game, None, camera);
-            for player in &game.players {
-                let position = player.avatar(1.0).position;
-                assert!(position.x > low.x && position.z > low.z, "{position}");
-                assert!(position.x < high.x && position.z < high.z, "{position}");
-            }
         }
     }
 
