@@ -1,0 +1,18 @@
+# Built for wasm32-unknown-unknown, so it is its own workspace: a native build of the game's workspace can't link the
+# functions the game provides.
+[workspace]
+
+[package]
+name = "pillar"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+agent-api = { path = "../../crates/agent-api" }
+
+[profile.release]
+opt-level = "s"
