@@ -12,3 +12,10 @@ version = "0.1.0"
 dependencies = [
  "agent-api",
 ]
+
+[[package]]
+name = "wander"
+version = "0.1.0"
+dependencies = [
+ "agent-api",
+]
