@@ -13,7 +13,7 @@ pub fn break_ticks(block: Block) -> Option<u32> {
         Block::Dirt | Block::Sand => Some(15),
         Block::Grass | Block::Gravel => Some(18),
         Block::Stone => Some(45),
-        Block::Cobblestone | Block::OakLog(_) => Some(60),
+        Block::Cobblestone | Block::OakLog(_) | Block::OakPlanks => Some(60),
         Block::Air | Block::Water | Block::WorldBorder => None,
     }
 }
@@ -28,6 +28,7 @@ fn drop_table(block: Block) -> DropTable {
         // Logs stack together whichever way their grain ran, and placing one sets its grain afresh.
         Block::OakLog(_) => &[(1, Some(Block::OakLog(Axis::Y)))],
         Block::OakLeaves => &[(19, None), (1, Some(Block::OakLeaves))],
+        Block::OakPlanks => &[(1, Some(Block::OakPlanks))],
         Block::Sand => &[(1, Some(Block::Sand))],
         Block::Gravel => &[(1, Some(Block::Gravel))],
         Block::Snow => &[(1, Some(Block::Snow))],
@@ -88,6 +89,7 @@ mod tests {
             Block::Snow,
             Block::OakLog(Axis::Y),
             Block::OakLeaves,
+            Block::OakPlanks,
         ];
         for block in blocks {
             assert!(break_ticks(block).is_some() && !drop_table(block).is_empty(), "{block:?}");

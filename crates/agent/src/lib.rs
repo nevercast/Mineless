@@ -5,9 +5,10 @@
 use std::fmt;
 
 use glam::{IVec3, Vec2};
+use sim::crafting::{self, RECIPES, Want};
 use sim::game::Game;
 use sim::player::{Controls, Player};
-use sim::world::{Block, CHUNK_SIZE, World};
+use sim::world::{Axis, Block, CHUNK_SIZE, World};
 use wasmi::{
     Caller, Config, Engine, Error, Extern, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc, TypedResumableCall,
     TypedResumableCallHostTrap, TypedResumableCallOutOfFuel, errors::HostError,
@@ -40,9 +41,32 @@ fn wire(block: Block) -> u32 {
         Block::Snow => Api::Snow,
         Block::OakLog(_) => Api::OakLog,
         Block::OakLeaves => Api::OakLeaves,
+        Block::OakPlanks => Api::OakPlanks,
         Block::Water => Api::Water,
         Block::WorldBorder => Api::WorldBorder,
     }) as u32
+}
+
+/// The block a number from the script stands for: the first in the game's blocks that crosses as it.
+fn unwire(number: u32) -> Option<Block> {
+    use Block::*;
+    [
+        Air,
+        Grass,
+        Dirt,
+        Stone,
+        Cobblestone,
+        Sand,
+        Gravel,
+        Snow,
+        OakLog(Axis::Y),
+        OakLeaves,
+        OakPlanks,
+        Water,
+        WorldBorder,
+    ]
+    .into_iter()
+    .find(|&block| wire(block) == number)
 }
 
 /// A script driving one player.
@@ -161,6 +185,9 @@ fn linker(engine: &Engine) -> Result<Linker<Host>, Error> {
         .func_wrap("mineless", "block", block)?
         .func_wrap("mineless", "find_nearest", find_nearest)?
         .func_wrap("mineless", "inventory", inventory)?
+        .func_wrap("mineless", "crafts", crafts)?
+        .func_wrap("mineless", "craft", craft)?
+        .func_wrap("mineless", "want", want)?
         .func_wrap("mineless", "log", log)?;
     Ok(linker)
 }
@@ -291,6 +318,47 @@ fn inventory(mut caller: Caller<'_, Host>, slot: u32, address: u32) -> Result<u3
     Ok(1)
 }
 
+/// Writes `agent_api::Craft` for up to `capacity` recipes the player can craft now, and returns how many.
+fn crafts(mut caller: Caller<'_, Host>, address: u32, capacity: u32) -> Result<u32, Error> {
+    let host = caller.data();
+    let inventory = &host.game.players[host.player].inventory;
+    let craftable: Vec<[u32; 3]> = RECIPES
+        .iter()
+        .map(|recipe| [wire(recipe.output), recipe.count.into(), crafting::times(inventory, recipe)])
+        .filter(|&[.., times]| times > 0)
+        .take(capacity as usize)
+        .collect();
+    let count = craftable.len() as u32;
+    write(&mut caller, address, craftable.into_iter().flatten())?;
+    Ok(count)
+}
+
+/// Crafts what makes `output` up to `times` times, and returns how many times it did.
+fn craft(mut caller: Caller<'_, Host>, output: u32, times: u32) -> u32 {
+    let Some(recipe) = unwire(output).and_then(crafting::recipe_for) else {
+        return 0;
+    };
+    let host = caller.data_mut();
+    crafting::craft(&mut host.game.players[host.player].inventory, recipe, times)
+}
+
+/// Works towards holding `amount` of `wanted`, as `crafting::want` does. Returns 0 when it holds them, 1 with the missing
+/// `agent_api::Stack` written when something has to be gathered first, and 2 when a craft's output didn't fit.
+fn want(mut caller: Caller<'_, Host>, wanted: u32, amount: u32, missing: u32) -> Result<u32, Error> {
+    let Some(block) = unwire(wanted) else {
+        return Err(Error::new("want was asked for a block that doesn't exist"));
+    };
+    let host = caller.data_mut();
+    match crafting::want(&mut host.game.players[host.player].inventory, block, amount) {
+        Want::Done => Ok(0),
+        Want::Missing(block, count) => {
+            write(&mut caller, missing, [wire(block), count])?;
+            Ok(1)
+        }
+        Want::NoRoom => Ok(2),
+    }
+}
+
 fn log(caller: Caller<'_, Host>, address: u32, len: u32) -> Result<(), Error> {
     let mut text = vec![0; len as usize];
     memory(&caller)?
@@ -380,6 +448,9 @@ mod tests {
         assert_eq!(size_of::<agent_api::State>(), 15 * 4);
         assert_eq!(size_of::<agent_api::Controls>(), 9 * 4);
         assert_eq!(wire(Block::OakLog(Axis::X)), wire(Block::OakLog(Axis::Z)));
+        for number in 0..=wire(Block::OakPlanks) {
+            assert_eq!(unwire(number).map(wire), Some(number));
+        }
     }
 
     #[test]
@@ -418,6 +489,23 @@ mod tests {
         assert!(agent.turn(&mut game).is_err());
         assert!(!walking(&game));
         assert!(agent.turn(&mut game).is_ok());
+    }
+
+    #[test]
+    fn wanting_planks_crafts_them_from_a_log() {
+        let mut game = game();
+        game.players[0].inventory.add(Block::OakLog(Axis::Y), 1);
+        let wat = format!(
+            r#"(module
+                (import "mineless" "want" (func $want (param i32 i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (func (export "run") (drop (call $want (i32.const {}) (i32.const 4) (i32.const 0)))))"#,
+            wire(Block::OakPlanks)
+        );
+        let mut agent = Agent::load(wat.as_bytes(), 0, "test".to_owned()).expect("the test script loads");
+        agent.turn(&mut game).expect("the script runs");
+        assert_eq!(game.players[0].inventory.count(Block::OakPlanks), 4);
+        assert_eq!(game.players[0].inventory.count(Block::OakLog(Axis::Y)), 0);
     }
 
     #[test]

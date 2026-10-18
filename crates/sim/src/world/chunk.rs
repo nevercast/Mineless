@@ -16,6 +16,7 @@ pub enum Block {
     Snow,
     OakLog(Axis),
     OakLeaves,
+    OakPlanks,
     /// Still sea water, which bodies pass through.
     Water,
     /// The barrier round the edge of the world: solid, full height, and drawn as a faint shield

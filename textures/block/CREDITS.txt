@@ -12,6 +12,7 @@ gravel.png
 oak_leaves.png
 oak_log.png
 oak_log_top.png
+oak_planks.png
 sand.png
 snow.png
 stone.png

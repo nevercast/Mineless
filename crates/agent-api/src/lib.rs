@@ -21,11 +21,12 @@ pub enum Block {
     OakLeaves,
     Water,
     WorldBorder,
+    OakPlanks,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
 impl Block {
-    const ALL: [Block; 12] = {
+    const ALL: [Block; 13] = {
         use Block::*;
         [
             Air,
@@ -40,6 +41,7 @@ impl Block {
             OakLeaves,
             Water,
             WorldBorder,
+            OakPlanks,
         ]
     };
 
@@ -87,6 +89,25 @@ pub struct Controls {
     pub slot: u32,
 }
 
+/// Something the actor can craft from what it carries: `count` of `output` each time, up to `times` times.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Craft {
+    pub output: Block,
+    pub count: u32,
+    pub times: u32,
+}
+
+/// What `want` says stands between the actor and holding what it wants.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Want {
+    /// It holds enough.
+    Done,
+    /// It has to gather this many more of a block first.
+    Missing(Block, u32),
+    /// A craft's output didn't fit in the inventory.
+    NoRoom,
+}
+
 /// Slots in an inventory, the first `HOTBAR` of which can be selected for placing.
 pub const SLOTS: u32 = 36;
 pub const HOTBAR: u32 = 9;
@@ -100,7 +121,7 @@ pub use calls::*;
 
 #[cfg(target_arch = "wasm32")]
 mod calls {
-    use super::{Block, Controls, State};
+    use super::{Block, Controls, Craft, State, Want};
 
     /// Up to 64 of one kind of block in an inventory slot.
     #[repr(C)]
@@ -110,8 +131,17 @@ mod calls {
         count: u32,
     }
 
+    /// `Craft` as it crosses from the game.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct WireCraft {
+        output: u32,
+        count: u32,
+        times: u32,
+    }
+
     mod host {
-        use super::{Controls, Stack, State};
+        use super::{Controls, Stack, State, WireCraft};
 
         #[link(wasm_import_module = "mineless")]
         unsafe extern "C" {
@@ -121,6 +151,9 @@ mod calls {
             pub fn block(x: i32, y: i32, z: i32) -> u32;
             pub fn find_nearest(block: u32, found: *mut [i32; 3], capacity: u32) -> u32;
             pub fn inventory(slot: u32, stack: *mut Stack) -> u32;
+            pub fn crafts(found: *mut WireCraft, capacity: u32) -> u32;
+            pub fn craft(output: u32, times: u32) -> u32;
+            pub fn want(block: u32, amount: u32, missing: *mut Stack) -> u32;
             pub fn log(text: *const u8, len: usize);
         }
     }
@@ -165,6 +198,45 @@ mod calls {
         // SAFETY: the game writes one `Stack` through a pointer to a live one.
         let filled = unsafe { host::inventory(slot, &mut stack) } != 0;
         filled.then(|| Some((Block::from_wire(stack.block)?, stack.count))).flatten()
+    }
+
+    /// What the actor can craft right now, filling at most `found.len()` of `found`. Returns how many it filled.
+    pub fn crafts(found: &mut [Craft]) -> usize {
+        let mut wire = vec![WireCraft::default(); found.len()];
+        let capacity = u32::try_from(wire.len()).unwrap_or(u32::MAX);
+        // SAFETY: the game writes at most `capacity` crafts into `wire`.
+        let filled = unsafe { host::crafts(wire.as_mut_ptr(), capacity) } as usize;
+        let known = wire[..filled].iter().filter_map(|craft| {
+            Some(Craft {
+                output: Block::from_wire(craft.output)?,
+                count: craft.count,
+                times: craft.times,
+            })
+        });
+        let mut count = 0;
+        for (slot, craft) in found.iter_mut().zip(known) {
+            *slot = craft;
+            count += 1;
+        }
+        count
+    }
+
+    /// Crafts what makes `output` up to `times` times, as often as the inventory allows, and returns how many times it did.
+    pub fn craft(output: Block, times: u32) -> u32 {
+        // SAFETY: takes plain numbers only.
+        unsafe { host::craft(output as u32, times) }
+    }
+
+    /// Works towards holding `amount` of `block`: crafts everything it can that leads there, then says what still has to be
+    /// gathered. Gathering what it names and asking again ends with the amount held.
+    pub fn want(block: Block, amount: u32) -> Want {
+        let mut missing = Stack::default();
+        // SAFETY: the game writes one `Stack` through a pointer to a live one.
+        match unsafe { host::want(block as u32, amount, &mut missing) } {
+            0 => Want::Done,
+            1 => Block::from_wire(missing.block).map_or(Want::NoRoom, |block| Want::Missing(block, missing.count)),
+            _ => Want::NoRoom,
+        }
     }
 
     /// Writes a line to the game's console.
