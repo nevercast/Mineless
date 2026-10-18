@@ -25,6 +25,7 @@ jobs:
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
       - run: cargo clippy -p agent-api --target wasm32-unknown-unknown --locked
-      - run: cargo fmt --manifest-path scripts/pillar/Cargo.toml --check
-      - run: cargo clippy --manifest-path scripts/pillar/Cargo.toml --target wasm32-unknown-unknown --locked
-      - run: cargo build --manifest-path scripts/pillar/Cargo.toml --target wasm32-unknown-unknown --release --locked
+      - run: cargo fmt --manifest-path scripts/Cargo.toml --all --check
+      - run: cargo clippy --manifest-path scripts/Cargo.toml --workspace --target wasm32-unknown-unknown --locked
+      - run: cargo test --manifest-path scripts/Cargo.toml -p wander --locked
+      - run: cargo build --manifest-path scripts/Cargo.toml --workspace --target wasm32-unknown-unknown --release --locked
