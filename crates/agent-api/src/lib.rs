@@ -24,11 +24,12 @@ pub enum Block {
     OakPlanks,
     /// Whichever way they face.
     OakStairs,
+    CraftingTable,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
 impl Block {
-    const ALL: [Block; 14] = {
+    const ALL: [Block; 15] = {
         use Block::*;
         [
             Air,
@@ -45,6 +46,7 @@ impl Block {
             WorldBorder,
             OakPlanks,
             OakStairs,
+            CraftingTable,
         ]
     };
 
@@ -109,6 +111,8 @@ pub enum Want {
     Missing(Block, u32),
     /// A craft's output didn't fit in the inventory.
     NoRoom,
+    /// A craft on the way needs a crafting table within `REACH`.
+    NeedTable,
 }
 
 /// Slots in an inventory, the first `HOTBAR` of which can be selected for placing.
@@ -116,6 +120,8 @@ pub const SLOTS: u32 = 36;
 pub const HOTBAR: u32 = 9;
 /// How far from its feet an actor sees blocks.
 pub const SIGHT: i32 = 64;
+/// How far from its eyes an actor reaches: the blocks it aims at, and a crafting table it crafts at.
+pub const REACH: f32 = 4.5;
 
 // Only scripts have a game to provide these. Leaving them out of native builds lets the game share the types above without
 // linking imports nothing provides, which Windows refuses.
@@ -238,6 +244,7 @@ mod calls {
         match unsafe { host::want(block as u32, amount, &mut missing) } {
             0 => Want::Done,
             1 => Block::from_wire(missing.block).map_or(Want::NoRoom, |block| Want::Missing(block, missing.count)),
+            3 => Want::NeedTable,
             _ => Want::NoRoom,
         }
     }

@@ -13,6 +13,7 @@ pub fn break_ticks(block: Block) -> Option<u32> {
         Block::Dirt | Block::Sand => Some(15),
         Block::Grass | Block::Gravel => Some(18),
         Block::Stone => Some(45),
+        Block::CraftingTable => Some(75),
         Block::Cobblestone | Block::OakLog(_) | Block::OakPlanks | Block::OakStairs(_) => Some(60),
         Block::Air | Block::Water | Block::WorldBorder => None,
     }
@@ -31,6 +32,7 @@ fn drop_table(block: Block) -> DropTable {
         Block::OakPlanks => &[(1, Some(Block::OakPlanks))],
         // Like logs, stairs face afresh as they're placed.
         Block::OakStairs(_) => &[(1, Some(Block::OakStairs(Facing::North)))],
+        Block::CraftingTable => &[(1, Some(Block::CraftingTable))],
         Block::Sand => &[(1, Some(Block::Sand))],
         Block::Gravel => &[(1, Some(Block::Gravel))],
         Block::Snow => &[(1, Some(Block::Snow))],
@@ -93,6 +95,7 @@ mod tests {
             Block::OakLeaves,
             Block::OakPlanks,
             Block::OakStairs(Facing::East),
+            Block::CraftingTable,
         ];
         for block in blocks {
             assert!(break_ticks(block).is_some() && !drop_table(block).is_empty(), "{block:?}");

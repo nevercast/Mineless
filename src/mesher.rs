@@ -42,10 +42,13 @@ pub enum Tile {
     OakLeaves,
     Water,
     OakPlanks,
+    CraftingTableTop,
+    CraftingTableFront,
+    CraftingTableSide,
 }
 
 impl Tile {
-    pub const ALL: [Tile; 13] = [
+    pub const ALL: [Tile; 16] = [
         Tile::GrassTop,
         Tile::GrassSide,
         Tile::Dirt,
@@ -59,6 +62,9 @@ impl Tile {
         Tile::OakLeaves,
         Tile::Water,
         Tile::OakPlanks,
+        Tile::CraftingTableTop,
+        Tile::CraftingTableFront,
+        Tile::CraftingTableSide,
     ];
 
     /// The tile for the face of `block` facing `normal`.
@@ -79,6 +85,12 @@ impl Tile {
             Block::OakLog(_) => Tile::OakLog,
             Block::OakLeaves => Tile::OakLeaves,
             Block::OakPlanks | Block::OakStairs(_) => Tile::OakPlanks,
+            Block::CraftingTable => match normal {
+                IVec3::Y => Tile::CraftingTableTop,
+                IVec3::NEG_Y => Tile::OakPlanks,
+                _ if normal.x != 0 => Tile::CraftingTableFront,
+                _ => Tile::CraftingTableSide,
+            },
             Block::Water => Tile::Water,
             Block::Air | Block::WorldBorder => unreachable!("{block:?} has no faces"),
         }

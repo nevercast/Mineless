@@ -21,6 +21,7 @@ pub enum Block {
     OakPlanks,
     /// Steps up towards the way it faces.
     OakStairs(Facing),
+    CraftingTable,
     /// Still sea water, which bodies pass through.
     Water,
     /// The barrier round the edge of the world: solid, full height, and drawn as a faint shield

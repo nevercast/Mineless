@@ -105,6 +105,9 @@ fn tile_image(tile: Tile) -> RgbaImage {
         Tile::OakLogTop => include_bytes!("../../textures/block/oak_log_top.png"),
         Tile::OakLeaves => include_bytes!("../../textures/block/oak_leaves.png"),
         Tile::OakPlanks => include_bytes!("../../textures/block/oak_planks.png"),
+        Tile::CraftingTableTop => include_bytes!("../../textures/block/crafting_table_top.png"),
+        Tile::CraftingTableFront => include_bytes!("../../textures/block/crafting_table_front.png"),
+        Tile::CraftingTableSide => include_bytes!("../../textures/block/crafting_table_side.png"),
         Tile::Water => include_bytes!("../../textures/block/water_still.png"),
     };
     let mut image = image::load_from_memory_with_format(png, image::ImageFormat::Png)

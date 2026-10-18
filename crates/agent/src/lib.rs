@@ -43,6 +43,7 @@ fn wire(block: Block) -> u32 {
         Block::OakLeaves => Api::OakLeaves,
         Block::OakPlanks => Api::OakPlanks,
         Block::OakStairs(_) => Api::OakStairs,
+        Block::CraftingTable => Api::CraftingTable,
         Block::Water => Api::Water,
         Block::WorldBorder => Api::WorldBorder,
     }) as u32
@@ -64,6 +65,7 @@ fn unwire(number: u32) -> Option<Block> {
         OakLeaves,
         OakPlanks,
         OakStairs(Facing::North),
+        CraftingTable,
         Water,
         WorldBorder,
     ]
@@ -323,10 +325,17 @@ fn inventory(mut caller: Caller<'_, Host>, slot: u32, address: u32) -> Result<u3
 /// Writes `agent_api::Craft` for up to `capacity` recipes the player can craft now, and returns how many.
 fn crafts(mut caller: Caller<'_, Host>, address: u32, capacity: u32) -> Result<u32, Error> {
     let host = caller.data();
-    let inventory = &host.game.players[host.player].inventory;
+    let player = &host.game.players[host.player];
+    let (inventory, at_table) = (&player.inventory, player.at_crafting_table(&host.game.world));
     let craftable: Vec<[u32; 3]> = RECIPES
         .iter()
-        .map(|recipe| [wire(recipe.output), recipe.count.into(), crafting::times(inventory, recipe)])
+        .map(|recipe| {
+            [
+                wire(recipe.output),
+                recipe.count.into(),
+                crafting::times(inventory, recipe, at_table),
+            ]
+        })
         .filter(|&[.., times]| times > 0)
         .take(capacity as usize)
         .collect();
@@ -341,23 +350,29 @@ fn craft(mut caller: Caller<'_, Host>, output: u32, times: u32) -> u32 {
         return 0;
     };
     let host = caller.data_mut();
-    crafting::craft(&mut host.game.players[host.player].inventory, recipe, times)
+    let player = &mut host.game.players[host.player];
+    let at_table = player.at_crafting_table(&host.game.world);
+    crafting::craft(&mut player.inventory, recipe, times, at_table)
 }
 
 /// Works towards holding `amount` of `wanted`, as `crafting::want` does. Returns 0 when it holds them, 1 with the missing
-/// `agent_api::Stack` written when something has to be gathered first, and 2 when a craft's output didn't fit.
+/// `agent_api::Stack` written when something has to be gathered first, 2 when a craft's output didn't fit, and 3 when a
+/// craft needs a crafting table in reach.
 fn want(mut caller: Caller<'_, Host>, wanted: u32, amount: u32, missing: u32) -> Result<u32, Error> {
     let Some(block) = unwire(wanted) else {
         return Err(Error::new("want was asked for a block that doesn't exist"));
     };
     let host = caller.data_mut();
-    match crafting::want(&mut host.game.players[host.player].inventory, block, amount) {
+    let player = &mut host.game.players[host.player];
+    let at_table = player.at_crafting_table(&host.game.world);
+    match crafting::want(&mut player.inventory, block, amount, at_table) {
         Want::Done => Ok(0),
         Want::Missing(block, count) => {
             write(&mut caller, missing, [wire(block), count])?;
             Ok(1)
         }
         Want::NoRoom => Ok(2),
+        Want::NeedTable => Ok(3),
     }
 }
 
@@ -451,7 +466,7 @@ mod tests {
         assert_eq!(size_of::<agent_api::Controls>(), 9 * 4);
         assert_eq!(wire(Block::OakLog(Axis::X)), wire(Block::OakLog(Axis::Z)));
         assert_eq!(wire(Block::OakStairs(Facing::East)), wire(Block::OakStairs(Facing::West)));
-        for number in 0..=wire(Block::OakStairs(Facing::East)) {
+        for number in 0..=wire(Block::CraftingTable) {
             assert_eq!(unwire(number).map(wire), Some(number));
         }
     }

@@ -119,6 +119,17 @@ impl Player {
         (world.block(hit.block) != Block::WorldBorder).then_some(hit)
     }
 
+    /// Whether a crafting table is within reach of the eyes, which lets the player craft what needs one.
+    pub fn at_crafting_table(&self, world: &World) -> bool {
+        let eye = self.body.position + Vec3::Y * EYE_HEIGHT;
+        let reach = REACH.ceil() as i32;
+        let (first, last) = (eye.floor().as_ivec3() - reach, eye.floor().as_ivec3() + reach);
+        (first.x..=last.x)
+            .flat_map(|x| (first.y..=last.y).flat_map(move |y| (first.z..=last.z).map(move |z| IVec3::new(x, y, z))))
+            .filter(|&cell| world.block(cell) == Block::CraftingTable)
+            .any(|cell| eye.clamp(cell.as_vec3(), cell.as_vec3() + 1.0).distance(eye) <= REACH)
+    }
+
     /// Unit vector the head looks along.
     fn look_direction(&self) -> Vec3 {
         let (sin_yaw, cos_yaw) = (self.controls.yaw + self.controls.head_yaw).sin_cos();
@@ -276,6 +287,19 @@ mod tests {
             }
         }
         world
+    }
+
+    #[test]
+    fn a_crafting_table_is_in_reach_up_to_four_and_a_half_blocks_from_the_eyes() {
+        let mut world = floor();
+        let player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
+        assert!(!player.at_crafting_table(&world));
+        // Its near face is 4.5 blocks from the eyes, then 4.5 and a bit.
+        world.set_block(IVec3::new(13, 2, 8), Block::CraftingTable);
+        assert!(player.at_crafting_table(&world));
+        world.set_block(IVec3::new(13, 2, 8), Block::Air);
+        world.set_block(IVec3::new(13, 2, 9), Block::CraftingTable);
+        assert!(!player.at_crafting_table(&world));
     }
 
     #[test]
