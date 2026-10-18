@@ -70,6 +70,8 @@ impl Extent {
 #[derive(Default)]
 pub struct World {
     chunks: ChunkMap<Chunk>,
+    /// Blocks changed by `set_block` since the last `take_edits`.
+    edited: Vec<IVec3>,
 }
 
 /// A map keyed by chunk coordinate, hashed cheaply.
@@ -201,7 +203,30 @@ impl World {
     pub fn set_block(&mut self, position: IVec3, block: Block) {
         let (chunk, local) = split(position);
         let chunk = self.chunks.get_mut(&chunk).expect("chunk is loaded");
-        chunk.set(local.x, local.y, local.z, block);
+        if chunk.get(local.x, local.y, local.z) != block {
+            chunk.set(local.x, local.y, local.z, block);
+            self.edited.push(position);
+        }
+    }
+
+    /// The chunks whose look the edits since the last call may have changed: each edited block's own chunk and every chunk
+    /// touching that block, since faces and shading reach across chunk borders. Edited chunks left one block throughout are
+    /// stored as just that block again.
+    pub fn take_edits(&mut self) -> ChunkSet {
+        let edited = std::mem::take(&mut self.edited);
+        let edited_chunks: ChunkSet = edited.iter().map(|&position| split(position).0).collect();
+        for chunk in edited_chunks {
+            if let Some(chunk) = self.chunks.get_mut(&chunk) {
+                chunk.compact();
+            }
+        }
+        let mut touched = ChunkSet::default();
+        for position in edited {
+            for offset in (-1..=1).flat_map(|x| (-1..=1).flat_map(move |y| (-1..=1).map(move |z| IVec3::new(x, y, z)))) {
+                touched.insert(split(position + offset).0);
+            }
+        }
+        touched
     }
 }
 
@@ -289,6 +314,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn edits_name_the_chunks_they_touch_and_compact_them() {
+        let mut world = World::empty(IVec3::new(2, 2, 2));
+        world.set_block(IVec3::new(5, 6, 7), Block::Stone);
+        let only_its_own: ChunkSet = [IVec3::ZERO].into_iter().collect();
+        assert_eq!(world.take_edits(), only_its_own);
+        assert!(world.take_edits().is_empty(), "taking clears them");
+
+        // A block at a chunk corner touches the eight chunks round that corner.
+        world.set_block(IVec3::new(15, 15, 15), Block::Dirt);
+        let corner = world.take_edits();
+        assert_eq!(corner.len(), 8);
+        assert!(corner.contains(&IVec3::ONE) && corner.contains(&IVec3::ZERO));
+
+        // Writing what is already there is no edit.
+        world.set_block(IVec3::new(5, 6, 7), Block::Stone);
+        assert!(world.take_edits().is_empty());
+
+        // Undoing both edits leaves the chunk all air, stored as such once the edits are taken.
+        world.set_block(IVec3::new(5, 6, 7), Block::Air);
+        world.set_block(IVec3::new(15, 15, 15), Block::Air);
+        assert_eq!(world.uniform_chunk(IVec3::ZERO), None);
+        world.take_edits();
+        assert_eq!(world.uniform_chunk(IVec3::ZERO), Some(Block::Air));
     }
 
     #[test]
