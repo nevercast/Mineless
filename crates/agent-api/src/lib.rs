@@ -23,6 +23,7 @@ pub enum Block {
     WorldBorder,
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
 impl Block {
     const ALL: [Block; 12] = {
         use Block::*;
@@ -86,81 +87,91 @@ pub struct Controls {
     pub slot: u32,
 }
 
-/// Up to 64 of one kind of block in an inventory slot.
-#[repr(C)]
-#[derive(Default)]
-struct Stack {
-    block: u32,
-    count: u32,
-}
-
 /// Slots in an inventory, the first `HOTBAR` of which can be selected for placing.
 pub const SLOTS: u32 = 36;
 pub const HOTBAR: u32 = 9;
 /// How far from its feet an actor sees blocks.
 pub const SIGHT: i32 = 64;
 
-mod host {
-    use super::{Controls, Stack, State};
+// Only scripts have a game to provide these. Leaving them out of native builds lets the game share the types above without
+// linking imports nothing provides, which Windows refuses.
+#[cfg(target_arch = "wasm32")]
+pub use calls::*;
 
-    #[link(wasm_import_module = "mineless")]
-    unsafe extern "C" {
-        pub fn wait_ticks(ticks: u32);
-        pub fn observe(state: *mut State);
-        pub fn set_controls(controls: *const Controls);
-        pub fn block(x: i32, y: i32, z: i32) -> u32;
-        pub fn find_nearest(block: u32, found: *mut [i32; 3], capacity: u32) -> u32;
-        pub fn inventory(slot: u32, stack: *mut Stack) -> u32;
-        pub fn log(text: *const u8, len: usize);
+#[cfg(target_arch = "wasm32")]
+mod calls {
+    use super::{Block, Controls, State};
+
+    /// Up to 64 of one kind of block in an inventory slot.
+    #[repr(C)]
+    #[derive(Default)]
+    struct Stack {
+        block: u32,
+        count: u32,
     }
-}
 
-/// Ends this tick's turn and carries on `ticks` ticks later; 1 is the next tick.
-pub fn wait_ticks(ticks: u32) {
-    // SAFETY: takes plain numbers only.
-    unsafe { host::wait_ticks(ticks) }
-}
+    mod host {
+        use super::{Controls, Stack, State};
 
-pub fn observe() -> State {
-    let mut state = State::default();
-    // SAFETY: the game writes one `State` through a pointer to a live one.
-    unsafe { host::observe(&mut state) };
-    state
-}
+        #[link(wasm_import_module = "mineless")]
+        unsafe extern "C" {
+            pub fn wait_ticks(ticks: u32);
+            pub fn observe(state: *mut State);
+            pub fn set_controls(controls: *const Controls);
+            pub fn block(x: i32, y: i32, z: i32) -> u32;
+            pub fn find_nearest(block: u32, found: *mut [i32; 3], capacity: u32) -> u32;
+            pub fn inventory(slot: u32, stack: *mut Stack) -> u32;
+            pub fn log(text: *const u8, len: usize);
+        }
+    }
 
-/// Replaces every control at once. They take effect on the next tick.
-pub fn set_controls(controls: &Controls) {
-    // SAFETY: the game only reads one `Controls` through a pointer to a live one.
-    unsafe { host::set_controls(controls) }
-}
+    /// Ends this tick's turn and carries on `ticks` ticks later; 1 is the next tick.
+    pub fn wait_ticks(ticks: u32) {
+        // SAFETY: takes plain numbers only.
+        unsafe { host::wait_ticks(ticks) }
+    }
 
-/// The block at a position, or `None` if it's further than `SIGHT` from the feet or the game's block is newer than this API.
-pub fn block(position: [i32; 3]) -> Option<Block> {
-    let [x, y, z] = position;
-    // SAFETY: takes plain numbers only.
-    Block::from_wire(unsafe { host::block(x, y, z) })
-}
+    pub fn observe() -> State {
+        let mut state = State::default();
+        // SAFETY: the game writes one `State` through a pointer to a live one.
+        unsafe { host::observe(&mut state) };
+        state
+    }
 
-/// The blocks of one kind within `SIGHT` of the feet, nearest first, filling at most `found.len()` of `found`. Returns how
-/// many it found. The search costs the script time in proportion to the space searched.
-pub fn find_nearest(block: Block, found: &mut [[i32; 3]]) -> usize {
-    let capacity = u32::try_from(found.len()).unwrap_or(u32::MAX);
-    // SAFETY: the game writes at most `capacity` positions into `found`.
-    unsafe { host::find_nearest(block as u32, found.as_mut_ptr(), capacity) as usize }
-}
+    /// Replaces every control at once. They take effect on the next tick.
+    pub fn set_controls(controls: &Controls) {
+        // SAFETY: the game only reads one `Controls` through a pointer to a live one.
+        unsafe { host::set_controls(controls) }
+    }
 
-/// What's in an inventory slot, `0..SLOTS`. Empty slots and slots past the end are `None`.
-pub fn inventory(slot: u32) -> Option<(Block, u32)> {
-    let mut stack = Stack::default();
-    // SAFETY: the game writes one `Stack` through a pointer to a live one.
-    let filled = unsafe { host::inventory(slot, &mut stack) } != 0;
-    filled.then(|| Some((Block::from_wire(stack.block)?, stack.count))).flatten()
-}
+    /// The block at a position, or `None` if it's further than `SIGHT` from the feet or the game's block is newer than this API.
+    pub fn block(position: [i32; 3]) -> Option<Block> {
+        let [x, y, z] = position;
+        // SAFETY: takes plain numbers only.
+        Block::from_wire(unsafe { host::block(x, y, z) })
+    }
 
-/// Writes a line to the game's console.
-pub fn log(text: &str) {
-    // SAFETY: the game only reads `len` bytes from `text`.
-    unsafe { host::log(text.as_ptr(), text.len()) }
+    /// The blocks of one kind within `SIGHT` of the feet, nearest first, filling at most `found.len()` of `found`. Returns how
+    /// many it found. The search costs the script time in proportion to the space searched.
+    pub fn find_nearest(block: Block, found: &mut [[i32; 3]]) -> usize {
+        let capacity = u32::try_from(found.len()).unwrap_or(u32::MAX);
+        // SAFETY: the game writes at most `capacity` positions into `found`.
+        unsafe { host::find_nearest(block as u32, found.as_mut_ptr(), capacity) as usize }
+    }
+
+    /// What's in an inventory slot, `0..SLOTS`. Empty slots and slots past the end are `None`.
+    pub fn inventory(slot: u32) -> Option<(Block, u32)> {
+        let mut stack = Stack::default();
+        // SAFETY: the game writes one `Stack` through a pointer to a live one.
+        let filled = unsafe { host::inventory(slot, &mut stack) } != 0;
+        filled.then(|| Some((Block::from_wire(stack.block)?, stack.count))).flatten()
+    }
+
+    /// Writes a line to the game's console.
+    pub fn log(text: &str) {
+        // SAFETY: the game only reads `len` bytes from `text`.
+        unsafe { host::log(text.as_ptr(), text.len()) }
+    }
 }
 
 #[cfg(test)]
