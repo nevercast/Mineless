@@ -22,11 +22,13 @@ pub enum Block {
     Water,
     WorldBorder,
     OakPlanks,
+    /// Whichever way they face.
+    OakStairs,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
 impl Block {
-    const ALL: [Block; 13] = {
+    const ALL: [Block; 14] = {
         use Block::*;
         [
             Air,
@@ -42,6 +44,7 @@ impl Block {
             Water,
             WorldBorder,
             OakPlanks,
+            OakStairs,
         ]
     };
 

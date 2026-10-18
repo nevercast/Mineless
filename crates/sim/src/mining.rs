@@ -3,7 +3,7 @@
 use glam::IVec3;
 
 use crate::world::terrain::noise::hash;
-use crate::world::{Axis, Block};
+use crate::world::{Axis, Block, Facing};
 
 /// Ticks of holding attack on a block before it breaks, or `None` if it can't be broken. These are Minecraft's times by hand,
 /// one and a half seconds per point of hardness, as if every block could be gathered without a tool.
@@ -13,7 +13,7 @@ pub fn break_ticks(block: Block) -> Option<u32> {
         Block::Dirt | Block::Sand => Some(15),
         Block::Grass | Block::Gravel => Some(18),
         Block::Stone => Some(45),
-        Block::Cobblestone | Block::OakLog(_) | Block::OakPlanks => Some(60),
+        Block::Cobblestone | Block::OakLog(_) | Block::OakPlanks | Block::OakStairs(_) => Some(60),
         Block::Air | Block::Water | Block::WorldBorder => None,
     }
 }
@@ -29,6 +29,8 @@ fn drop_table(block: Block) -> DropTable {
         Block::OakLog(_) => &[(1, Some(Block::OakLog(Axis::Y)))],
         Block::OakLeaves => &[(19, None), (1, Some(Block::OakLeaves))],
         Block::OakPlanks => &[(1, Some(Block::OakPlanks))],
+        // Like logs, stairs face afresh as they're placed.
+        Block::OakStairs(_) => &[(1, Some(Block::OakStairs(Facing::North)))],
         Block::Sand => &[(1, Some(Block::Sand))],
         Block::Gravel => &[(1, Some(Block::Gravel))],
         Block::Snow => &[(1, Some(Block::Snow))],
@@ -90,6 +92,7 @@ mod tests {
             Block::OakLog(Axis::Y),
             Block::OakLeaves,
             Block::OakPlanks,
+            Block::OakStairs(Facing::East),
         ];
         for block in blocks {
             assert!(break_ticks(block).is_some() && !drop_table(block).is_empty(), "{block:?}");

@@ -8,7 +8,7 @@ use glam::{IVec3, Vec2};
 use sim::crafting::{self, RECIPES, Want};
 use sim::game::Game;
 use sim::player::{Controls, Player};
-use sim::world::{Axis, Block, CHUNK_SIZE, World};
+use sim::world::{Axis, Block, CHUNK_SIZE, Facing, World};
 use wasmi::{
     Caller, Config, Engine, Error, Extern, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc, TypedResumableCall,
     TypedResumableCallHostTrap, TypedResumableCallOutOfFuel, errors::HostError,
@@ -42,6 +42,7 @@ fn wire(block: Block) -> u32 {
         Block::OakLog(_) => Api::OakLog,
         Block::OakLeaves => Api::OakLeaves,
         Block::OakPlanks => Api::OakPlanks,
+        Block::OakStairs(_) => Api::OakStairs,
         Block::Water => Api::Water,
         Block::WorldBorder => Api::WorldBorder,
     }) as u32
@@ -62,6 +63,7 @@ fn unwire(number: u32) -> Option<Block> {
         OakLog(Axis::Y),
         OakLeaves,
         OakPlanks,
+        OakStairs(Facing::North),
         Water,
         WorldBorder,
     ]
@@ -448,7 +450,8 @@ mod tests {
         assert_eq!(size_of::<agent_api::State>(), 15 * 4);
         assert_eq!(size_of::<agent_api::Controls>(), 9 * 4);
         assert_eq!(wire(Block::OakLog(Axis::X)), wire(Block::OakLog(Axis::Z)));
-        for number in 0..=wire(Block::OakPlanks) {
+        assert_eq!(wire(Block::OakStairs(Facing::East)), wire(Block::OakStairs(Facing::West)));
+        for number in 0..=wire(Block::OakStairs(Facing::East)) {
             assert_eq!(unwire(number).map(wire), Some(number));
         }
     }

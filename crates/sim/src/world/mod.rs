@@ -8,7 +8,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use glam::{IVec2, IVec3, Vec3Swizzles};
 
 use chunk::Chunk;
-pub use chunk::{Axis, Block, CHUNK_SIZE};
+pub use chunk::{Axis, Block, CHUNK_SIZE, Facing, Part};
 pub use ray::Hit;
 
 const SIZE: i32 = CHUNK_SIZE as i32;

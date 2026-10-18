@@ -1,3 +1,5 @@
+use glam::Vec3;
+
 /// Chunks are cubes of blocks this many blocks along each edge.
 pub const CHUNK_SIZE: usize = 16;
 const VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
@@ -17,6 +19,8 @@ pub enum Block {
     OakLog(Axis),
     OakLeaves,
     OakPlanks,
+    /// Steps up towards the way it faces.
+    OakStairs(Facing),
     /// Still sea water, which bodies pass through.
     Water,
     /// The barrier round the edge of the world: solid, full height, and drawn as a faint shield
@@ -24,10 +28,63 @@ pub enum Block {
     WorldBorder,
 }
 
+/// A box filling part of a block cell, as its lowest and highest corners within the cell's unit cube.
+pub type Part = [Vec3; 2];
+
+const CUBE: &[Part] = &[[Vec3::ZERO, Vec3::ONE]];
+const SLAB: Part = [Vec3::ZERO, Vec3::new(1.0, 0.5, 1.0)];
+/// A slab, and the half above it towards the way they face: north, east, south, west.
+const STAIRS: [&[Part]; 4] = [
+    &[SLAB, [Vec3::new(0.0, 0.5, 0.0), Vec3::new(1.0, 1.0, 0.5)]],
+    &[SLAB, [Vec3::new(0.5, 0.5, 0.0), Vec3::ONE]],
+    &[SLAB, [Vec3::new(0.0, 0.5, 0.5), Vec3::ONE]],
+    &[SLAB, [Vec3::new(0.0, 0.5, 0.0), Vec3::new(0.5, 1.0, 1.0)]],
+];
+
 impl Block {
-    /// Whether bodies collide with it and it hides what is behind it.
+    /// Whether bodies collide with it and rays stop at it.
     pub fn is_solid(self) -> bool {
         !matches!(self, Block::Air | Block::Water)
+    }
+
+    /// Whether it fills its whole cell, hiding the faces of blocks against it.
+    pub fn is_opaque(self) -> bool {
+        self.is_solid() && !matches!(self, Block::OakStairs(_))
+    }
+
+    /// The boxes a solid block fills, which bodies collide with and rays hit.
+    pub fn shape(self) -> &'static [Part] {
+        match self {
+            Block::OakStairs(facing) => STAIRS[facing as usize],
+            block if block.is_solid() => CUBE,
+            _ => &[],
+        }
+    }
+}
+
+/// A horizontal direction, as Minecraft names them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Facing {
+    /// -Z
+    North,
+    /// +X
+    East,
+    /// +Z
+    South,
+    /// -X
+    West,
+}
+
+impl Facing {
+    /// The way most of `direction` points across the ground.
+    pub fn of(direction: Vec3) -> Facing {
+        if direction.x.abs() > direction.z.abs() {
+            if direction.x > 0.0 { Facing::East } else { Facing::West }
+        } else if direction.z > 0.0 {
+            Facing::South
+        } else {
+            Facing::North
+        }
     }
 }
 
@@ -96,6 +153,25 @@ mod tests {
     #[test]
     fn blocks_stay_small() {
         assert!(size_of::<Block>() <= 2);
+    }
+
+    #[test]
+    fn stairs_fill_a_slab_and_the_half_above_it_they_face() {
+        for (facing, toward) in [
+            (Facing::North, Vec3::NEG_Z),
+            (Facing::East, Vec3::X),
+            (Facing::South, Vec3::Z),
+            (Facing::West, Vec3::NEG_X),
+        ] {
+            assert_eq!(Facing::of(toward + Vec3::new(0.2, -0.9, 0.2)), facing);
+            let [slab, step] = Block::OakStairs(facing).shape() else {
+                panic!("stairs are two boxes");
+            };
+            assert_eq!(*slab, SLAB);
+            let centre = (step[0] + step[1]) / 2.0;
+            assert_eq!(centre, Vec3::new(0.5, 0.75, 0.5) + toward / 4.0);
+            assert_eq!((step[1] - step[0]).element_product(), 0.25);
+        }
     }
 
     #[test]

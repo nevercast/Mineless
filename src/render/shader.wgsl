@@ -32,13 +32,19 @@ fn unpack(packed: u32, chunk_origin: vec3<f32>) -> VertexOutput {
     var occlusion = array<f32, 4>(1.0, 0.8, 0.65, 0.5);
 
     let local = vec3<f32>(vec3<u32>(packed, packed >> 5u, packed >> 10u) & vec3<u32>(31u));
-    let position = chunk_origin + local;
+    let half = vec3<f32>(vec3<u32>(packed >> 28u, packed >> 29u, packed >> 31u) & vec3<u32>(1u)) * 0.5;
+    let position = chunk_origin + local + half;
+    let normal = normals[(packed >> 15u) & 7u];
     var out: VertexOutput;
     out.clip_position = frame.view_projection * vec4<f32>(position, 1.0);
-    out.uv = uvs[(packed >> 18u) & 3u];
-    out.normal = normals[(packed >> 15u) & 7u];
+    // A corner half way along a face is half way across its texture. Texture u runs along x, or z on faces looking along x,
+    // and v along y, or z on top and bottom faces.
+    let uv = uvs[(packed >> 18u) & 3u];
+    let half_uv = vec2<f32>(select(half.x, half.z, normal.x != 0.0), select(half.y, half.z, normal.y != 0.0));
+    out.uv = select(uv, vec2<f32>(0.5), half_uv > vec2<f32>(0.0));
+    out.normal = normal;
     out.occlusion = occlusion[(packed >> 20u) & 3u];
-    out.tile = (packed >> 22u) & 255u;
+    out.tile = (packed >> 22u) & 63u;
     out.world_position = position;
     return out;
 }
@@ -60,7 +66,7 @@ const XRAY_GLOW: f32 = 0.06;
 @vertex
 fn vs_xray(@location(0) packed: u32, @location(1) chunk_origin: vec3<f32>) -> VertexOutput {
     var out = unpack(packed, chunk_origin);
-    if (packed >> 30u) == 0u {
+    if ((packed >> 30u) & 1u) == 0u {
         // All four corners of a face share the flag, so the whole face lands off screen and is clipped.
         out.clip_position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
     }

@@ -7,7 +7,7 @@ use crate::avatar::{Avatar, Pose, Skin};
 use crate::inventory::{HOTBAR, Inventory};
 use crate::mining;
 use crate::physics::Body;
-use crate::world::{Axis, Block, Hit, World};
+use crate::world::{Axis, Block, Facing, Hit, World};
 
 /// Simulation ticks per second, as in Minecraft.
 pub const TICK_RATE: f32 = 20.0;
@@ -47,7 +47,7 @@ pub struct Controls {
     /// Held to break the targeted block, which takes as long as `mining::break_ticks` says. Looking away starts over.
     pub attack: bool,
     /// Held to place a block from the selected hotbar slot against the targeted face, one at once and then one every
-    /// `PLACE_INTERVAL` ticks. A block isn't placed into a solid block, outside the world, or where any player stands.
+    /// `PLACE_INTERVAL` ticks. Stairs step up the way the head looks, as in Minecraft. A block isn't placed into a solid block, outside the world, or where any player stands.
     pub place: bool,
     /// The hotbar slot placing takes from, in `0..HOTBAR`; anything higher means the last.
     pub slot: usize,
@@ -209,6 +209,10 @@ impl Player {
             Block::OakLog(_) if hit.face.x != 0 => Block::OakLog(Axis::X),
             Block::OakLog(_) if hit.face.z != 0 => Block::OakLog(Axis::Z),
             Block::OakLog(_) => Block::OakLog(Axis::Y),
+            Block::OakStairs(_) => {
+                let (sin, cos) = (self.controls.yaw + self.controls.head_yaw).sin_cos();
+                Block::OakStairs(Facing::of(Vec3::new(-sin, 0.0, -cos)))
+            }
             block => block,
         };
         self.inventory.take(slot);

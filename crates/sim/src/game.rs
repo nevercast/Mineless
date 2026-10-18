@@ -29,11 +29,11 @@ mod tests {
 
     use super::*;
     use crate::avatar::Skin;
-    use crate::world::Block;
+    use crate::world::{Block, Facing};
 
     /// A stone floor at y = 0 and a builder at (8.5, 1, 8.5) facing +X, looking down at the floor two blocks ahead, with
-    /// cobblestone to place on top of it.
-    fn builder() -> Game {
+    /// `block` to place on top of it.
+    fn builder(block: Block) -> Game {
         let mut world = World::empty(IVec3::new(1, 4, 1));
         for x in 0..16 {
             for z in 0..16 {
@@ -43,7 +43,7 @@ mod tests {
         let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), -FRAC_PI_2, Skin::Player);
         player.controls.head_pitch = -(1.62f32).atan2(2.0);
         player.controls.place = true;
-        player.inventory.add(Block::Cobblestone, 1);
+        player.inventory.add(block, 1);
         Game {
             world,
             players: vec![player],
@@ -53,16 +53,23 @@ mod tests {
     #[test]
     fn blocks_are_not_placed_where_another_player_stands() {
         let cell = IVec3::new(10, 1, 8);
-        let mut game = builder();
+        let mut game = builder(Block::Cobblestone);
         game.tick();
         assert_eq!(game.world.block(cell), Block::Cobblestone);
 
-        let mut game = builder();
+        let mut game = builder(Block::Cobblestone);
         game.players.push(Player::new(Vec3::new(10.5, 1.0, 8.5), 0.0, Skin::Player));
         for _ in 0..10 {
             game.tick();
         }
         assert_eq!(game.world.block(cell), Block::Air);
         assert!(game.players[0].inventory.slot(0).is_some());
+    }
+
+    #[test]
+    fn stairs_are_placed_stepping_up_away_from_the_builder() {
+        let mut game = builder(Block::OakStairs(Facing::North));
+        game.tick();
+        assert_eq!(game.world.block(IVec3::new(10, 1, 8)), Block::OakStairs(Facing::East));
     }
 }
