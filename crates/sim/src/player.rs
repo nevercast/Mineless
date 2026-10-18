@@ -4,6 +4,7 @@
 use glam::{BVec3, Vec2, Vec3};
 
 use crate::avatar::{Avatar, Pose, Skin};
+use crate::inventory::Inventory;
 use crate::physics::Body;
 use crate::world::{Block, Hit, World};
 
@@ -45,6 +46,7 @@ pub struct Controls {
 pub struct Player {
     pub controls: Controls,
     pub skin: Skin,
+    pub inventory: Inventory,
     body: Body,
     /// Vertical speed in blocks per tick; up is positive.
     fall_velocity: f32,
@@ -60,6 +62,7 @@ impl Player {
         Self {
             skin,
             controls: Controls { yaw, ..Default::default() },
+            inventory: Inventory::default(),
             body: Body {
                 position: feet,
                 half_width: 0.3,
