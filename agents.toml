@@ -19,6 +19,11 @@ skin = "cyber-b"
 script = "scripts/target/wasm32-unknown-unknown/release/wander.wasm"
 
 [[agent]]
+name = "Moss"
+skin = "player"
+script = "scripts/target/wasm32-unknown-unknown/release/wander.wasm"
+
+[[agent]]
 name = "Pillar"
 skin = "player"
 script = "scripts/target/wasm32-unknown-unknown/release/pillar.wasm"

@@ -8,7 +8,7 @@ mod sky;
 mod spectator;
 mod visibility;
 
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::TAU;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,21 +20,21 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use agent::Agent;
-use glam::{IVec2, IVec3, Vec3, Vec3Swizzles, vec3};
+use glam::{IVec3, Vec3, Vec3Swizzles, vec3};
 use loading::Loading;
 use meshed_area::MeshedArea;
 use render::{Camera, Frustum, ListLine, Renderer};
 use sim::avatar::{Avatar, Skin};
 use sim::game::Game;
-use sim::player::{EYE_HEIGHT, JUMP_HEIGHTS, Player, TICK_RATE};
-use sim::world::{Block, CHUNK_SIZE, ChunkSet, Extent, World};
+use sim::player::{EYE_HEIGHT, Player, TICK_RATE};
+use sim::world::{CHUNK_SIZE, ChunkSet, Extent, World};
 use sky::{DAY_TICKS, Sky};
 use spectator::{AgentList, Spectator};
 
 struct App {
     /// Players are empty until the world is loaded, since they stand on it.
     game: Game,
-    /// The agents from the agents file, which drive the players after the test players, each with its player's skin.
+    /// The agents from the agents file, each driving the player at its own place in the game's players, with that player's skin.
     agents: Vec<(Agent, Skin)>,
     seed: u32,
     /// The world still being built, until play starts.
@@ -110,7 +110,7 @@ impl App {
         self.culling ^= code == CULLING_KEY;
         self.xray ^= code == XRAY_KEY;
         if let Some(index) = self.agent_list.key(code, self.agents.len())
-            && let Some(player) = agent_players_of(&self.game).get(index)
+            && let Some(player) = &self.game.players.get(index)
         {
             spectator::face(&mut self.camera, player.controls.yaw);
             look_back_at(&mut self.camera, &self.game.world, eyes(player, 1.0));
@@ -157,9 +157,8 @@ impl ApplicationHandler for App {
                 if loading.work(&mut self.game.world, &mut self.meshed, renderer, LOADING_SLICE) {
                     self.loading = None;
                     eprintln!("Playable after {:.2} s", self.launched.elapsed().as_secs_f32());
-                    self.game.players = test_players(&self.game.world);
                     let skins: Vec<Skin> = self.agents.iter().map(|&(_, skin)| skin).collect();
-                    self.game.players.extend(agent_players(&self.game.world, &skins));
+                    self.game.players = agent_players(&self.game.world, &skins);
                     let ground = self.game.world.column_top(START_POSITION.x as i32, START_POSITION.z as i32);
                     self.camera = start_camera(ground);
                     self.last_frame = Instant::now();
@@ -189,7 +188,7 @@ impl ApplicationHandler for App {
                     self.unsimulated -= 1.0 / TICK_RATE;
                     self.ticks += 1;
                     let tick_start = Instant::now();
-                    tick(&mut self.game, &mut self.agents, self.camera.position);
+                    tick(&mut self.game, &mut self.agents);
                     self.timings.ticks += 1;
                     self.timings.tick_seconds += tick_start.elapsed().as_secs_f32();
                 }
@@ -359,71 +358,24 @@ const MESHING_SLICE: Duration = Duration::from_millis(4);
 /// The world starts mid-morning.
 const START_TICKS: u64 = DAY_TICKS * 3 / 8;
 
-/// Blocks between neighbouring players in the starting grid, and players along each side of it.
-const PLAYER_SPACING: i32 = 64;
-const PLAYERS_ACROSS: i32 = 5;
-const TEST_PLAYERS: usize = (PLAYERS_ACROSS * PLAYERS_ACROSS) as usize;
 /// Blocks from the start camera, toward where it looks, that the agents gather, and how far round that spot they stand.
 const AGENTS_DISTANCE: f32 = 6.0;
 const AGENTS_RADIUS: f32 = 3.0;
 
-/// A grid of players round the origin, skins in turn, so ticks have a crowd to simulate. The first builds a pillar under itself up
-/// out of the sea, the second drops from twelve blocks up, the fifth digs at the ground in front of it, and the rest stand
-/// still.
-fn test_players(world: &World) -> Vec<Player> {
-    (0..PLAYERS_ACROSS)
-        .flat_map(|x| (0..PLAYERS_ACROSS).map(move |z| IVec2::new(x, z)))
-        .enumerate()
-        .map(|(index, cell)| {
-            let column = (cell - PLAYERS_ACROSS / 2) * PLAYER_SPACING;
-            let mut position = ground_at(world, column.x, column.y);
-            if index == 1 {
-                position.y += 12.0;
-            }
-            let yaw = (index as f32 * 123.0).to_radians();
-            let mut player = Player::new(position, yaw, Skin::ALL[index % Skin::ALL.len()]);
-            if index == 0 {
-                player.inventory.add(Block::Cobblestone, PILLAR_HEIGHT);
-                player.controls.place = true;
-                player.controls.head_pitch = -FRAC_PI_2;
-            } else if index == 4 {
-                player.controls.attack = true;
-                player.controls.head_pitch = DIG_PITCH;
-            }
-            player
-        })
-        .collect()
-}
-
-/// How far below level a digger looks: at the ground just in front of its feet.
-const DIG_PITCH: f32 = -55f32.to_radians();
-/// Blocks a builder starts with, and so how tall its pillar grows: enough to rise out of the sea
-/// from where the first test player stands.
-const PILLAR_HEIGHT: u8 = 24;
-
-/// Advances the game a tick: the agents take their turns, everyone moves, and the stand-in agent decides what the test players
-/// do next.
-fn tick(game: &mut Game, agents: &mut [(Agent, Skin)], camera: Vec3) {
+/// Advances the game a tick: the agents take their turns, then everyone moves.
+fn tick(game: &mut Game, agents: &mut [(Agent, Skin)]) {
     for (agent, _) in agents {
         if let Err(error) = agent.turn(game) {
             eprintln!("A script stopped: {error}");
         }
     }
     game.tick();
-    for player in game.players.iter_mut().take(TEST_PLAYERS) {
-        stand_in(player, camera);
-    }
-}
-
-/// The players the agents drive, in the agents' order.
-fn agent_players_of(game: &Game) -> &[Player] {
-    game.players.get(TEST_PLAYERS..).unwrap_or_default()
 }
 
 /// Keeps the camera on the agent being followed, and lists the agents with how far they are from the camera, `alpha` of the
 /// way from the last tick to this one.
 fn watch_agents(list: &AgentList, agents: &[(Agent, Skin)], game: &Game, camera: &mut Camera, alpha: f32) -> Vec<ListLine> {
-    let players = agent_players_of(game);
+    let players = &game.players;
     if let Some(player) = list.following().and_then(|index| players.get(index)) {
         look_back_at(camera, &game.world, eyes(player, alpha));
     }
@@ -465,47 +417,6 @@ fn agent_players(world: &World, skins: &[Skin]) -> Vec<Player> {
         .collect()
 }
 
-/// Stand-in agent for the test players: drives a player only through its controls, as a real agent will. Diggers keep digging
-/// whatever they look at, until nothing is left in reach. Builders look straight down and jump while they have blocks, placing
-/// one under their feet each jump. Everyone else stands still and watches the spectator's camera when it comes close.
-fn stand_in(player: &mut Player, camera: Vec3) {
-    if player.controls.place {
-        if player.is_on_ground() && player.inventory.slot(0).is_some() {
-            player.controls.jump = Some(*JUMP_HEIGHTS.end());
-        }
-    } else if !player.controls.attack {
-        look_toward(player, camera);
-    }
-}
-
-/// How close the camera must come before an idle player looks at it.
-const LOOK_RANGE: f32 = 8.0;
-/// How far the head turns from the body, side to side and up and down.
-const HEAD_YAW_LIMIT: f32 = 70f32.to_radians();
-const HEAD_PITCH_LIMIT: f32 = 45f32.to_radians();
-/// Fraction of the remaining turn the head makes each tick.
-const HEAD_EASE: f32 = 0.3;
-
-/// Turns the head toward `target` as far as the neck allows while it's within `LOOK_RANGE`, and
-/// back to straight ahead otherwise.
-fn look_toward(player: &mut Player, target: Vec3) {
-    let to_target = target - (player.avatar(1.0).position + Vec3::Y * EYE_HEIGHT);
-    let (yaw, pitch) = if to_target.length() < LOOK_RANGE {
-        let yaw = (-to_target.x).atan2(-to_target.z) - player.controls.yaw;
-        let yaw = (yaw + PI).rem_euclid(TAU) - PI;
-        let pitch = to_target.y.atan2(to_target.with_y(0.0).length());
-        (
-            yaw.clamp(-HEAD_YAW_LIMIT, HEAD_YAW_LIMIT),
-            pitch.clamp(-HEAD_PITCH_LIMIT, HEAD_PITCH_LIMIT),
-        )
-    } else {
-        (0.0, 0.0)
-    };
-    let controls = &mut player.controls;
-    controls.head_yaw += (yaw - controls.head_yaw) * HEAD_EASE;
-    controls.head_pitch += (pitch - controls.head_pitch) * HEAD_EASE;
-}
-
 /// The agents in the named agents file, or in `AGENTS_FILE` if there is one. An agent whose script won't load is left out, so a
 /// sample file still runs before its scripts are built.
 fn load_agents(named: Option<&Path>) -> Result<Vec<(Agent, Skin)>, String> {
@@ -517,8 +428,7 @@ fn load_agents(named: Option<&Path>) -> Result<Vec<(Agent, Skin)>, String> {
     let mut loaded = Vec::new();
     for spec in specs {
         let script = std::fs::read(&spec.script).map_err(|error| error.to_string());
-        match script.and_then(|wasm| Agent::load(&wasm, TEST_PLAYERS + loaded.len(), spec.name.clone()).map_err(|error| error.to_string()))
-        {
+        match script.and_then(|wasm| Agent::load(&wasm, loaded.len(), spec.name.clone()).map_err(|error| error.to_string())) {
             Ok(agent) => loaded.push((agent, spec.skin)),
             Err(error) => eprintln!("Leaving {} out: can't load {}: {error}", spec.name, spec.script.display()),
         }
@@ -621,30 +531,5 @@ mod tests {
             assert!((camera.yaw - framed.yaw).abs() < 1e-6);
             assert!((camera.pitch - framed.pitch).abs() < 1e-6);
         }
-    }
-
-    #[test]
-    fn idle_player_looks_at_a_nearby_camera_within_its_neck_limits() {
-        let mut player = Player::new(Vec3::ZERO, 0.0, Skin::Player);
-        // Up and to the left of a player facing -Z.
-        let camera = vec3(-2.0, EYE_HEIGHT + 2.0, -2.0);
-        for _ in 0..50 {
-            look_toward(&mut player, camera);
-        }
-        let controls = &player.controls;
-        assert!((controls.head_yaw - 45f32.to_radians()).abs() < 1e-3);
-        assert!(controls.head_pitch > 0.5 && controls.head_pitch <= HEAD_PITCH_LIMIT);
-
-        // Directly behind: the head turns as far as it can.
-        for _ in 0..50 {
-            look_toward(&mut player, vec3(0.5, EYE_HEIGHT, 3.0));
-        }
-        assert!((player.controls.head_yaw.abs() - HEAD_YAW_LIMIT).abs() < 1e-3);
-
-        // Out of range: back to straight ahead.
-        for _ in 0..50 {
-            look_toward(&mut player, vec3(0.0, EYE_HEIGHT, -LOOK_RANGE * 2.0));
-        }
-        assert!(player.controls.head_yaw.abs() < 1e-3);
     }
 }
