@@ -1,4 +1,5 @@
 mod chunk;
+mod ray;
 pub mod terrain;
 
 use std::collections::{HashMap, HashSet};
@@ -8,6 +9,7 @@ use glam::{IVec2, IVec3, Vec3Swizzles};
 
 use chunk::Chunk;
 pub use chunk::{Axis, Block, CHUNK_SIZE};
+pub use ray::Hit;
 
 const SIZE: i32 = CHUNK_SIZE as i32;
 
