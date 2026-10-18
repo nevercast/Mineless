@@ -2,6 +2,7 @@
 //! or the GPU.
 
 pub mod avatar;
+pub mod game;
 pub mod inventory;
 mod mining;
 mod physics;

@@ -47,7 +47,7 @@ pub struct Controls {
     /// Held to break the targeted block, which takes as long as `mining::break_ticks` says. Looking away starts over.
     pub attack: bool,
     /// Held to place a block from the selected hotbar slot against the targeted face, one at once and then one every
-    /// `PLACE_INTERVAL` ticks. A block isn't placed into a solid block, outside the world, or where the player stands.
+    /// `PLACE_INTERVAL` ticks. A block isn't placed into a solid block, outside the world, or where any player stands.
     pub place: bool,
     /// The hotbar slot placing takes from, in `0..HOTBAR`; anything higher means the last.
     pub slot: usize,
@@ -67,6 +67,7 @@ pub struct Player {
     /// Vertical speed in blocks per tick; up is positive.
     fall_velocity: f32,
     on_ground: bool,
+    blocked: BVec3,
     swing: f32,
     swing_phase: f32,
     /// Position and limb animation at the start of the current tick, to interpolate from.
@@ -89,6 +90,7 @@ impl Player {
             },
             fall_velocity: 0.0,
             on_ground: false,
+            blocked: BVec3::FALSE,
             swing: 0.0,
             swing_phase: 0.0,
             previous: (feet, 0.0, 0.0),
@@ -98,6 +100,11 @@ impl Player {
     /// Whether the last tick ended standing on a block.
     pub fn is_on_ground(&self) -> bool {
         self.on_ground
+    }
+
+    /// Which axes collision cut the last tick's movement short on.
+    pub fn blocked(&self) -> BVec3 {
+        self.blocked
     }
 
     /// Vertical speed in blocks per tick; up is positive.
@@ -119,11 +126,16 @@ impl Player {
         Vec3::new(-sin_yaw * cos_pitch, sin_pitch, -cos_yaw * cos_pitch)
     }
 
-    /// Advances one tick. Returns which axes collision cut short.
-    pub fn tick(&mut self, world: &mut World) -> BVec3 {
+    /// Whether the player's body takes up any of the block at `position`.
+    pub(crate) fn overlaps_block(&self, position: IVec3) -> bool {
+        self.body.overlaps_block(position)
+    }
+
+    /// Advances one tick. `occupied` says whether other bodies take up a block, so nothing is placed into them.
+    pub(crate) fn tick(&mut self, world: &mut World, occupied: impl Fn(IVec3) -> bool) {
         self.previous = (self.body.position, self.swing, self.swing_phase);
         self.break_target(world);
-        self.place_on_target(world);
+        self.place_on_target(world, occupied);
         let controls = self.controls;
         if let Some(height) = self.controls.jump.take()
             && self.on_ground
@@ -136,17 +148,16 @@ impl Player {
         let walk = controls.walk.clamp_length_max(1.0);
         let step = (forward * walk.y + right * walk.x) * WALK_SPEED / TICK_RATE;
         let step = step.with_y(self.fall_velocity);
-        let blocked = self.body.move_and_collide(world, step);
+        self.blocked = self.body.move_and_collide(world, step);
         // Like Minecraft, move first and then accelerate, so a body at rest drops a tick later.
         // Gravity applies even on the ground, keeping a standing body pressed onto it.
-        self.on_ground = blocked.y && step.y < 0.0;
-        let velocity = if blocked.y { 0.0 } else { self.fall_velocity };
+        self.on_ground = self.blocked.y && step.y < 0.0;
+        let velocity = if self.blocked.y { 0.0 } else { self.fall_velocity };
         self.fall_velocity = (velocity - GRAVITY) * AIR_DRAG;
 
         let walked = (self.body.position - self.previous.0).with_y(0.0).length();
         self.swing += ((walked * 4.0).min(1.0) - self.swing) * SWING_EASE;
         self.swing_phase += self.swing * STRIDE_PER_TICK;
-        blocked
     }
 
     /// Holds attack on the targeted block for another tick, and breaks it into the inventory once it has been held long enough.
@@ -174,7 +185,7 @@ impl Player {
     }
 
     /// Places a block from the selected slot in the open cell in front of the targeted face, if place is held and it's time.
-    fn place_on_target(&mut self, world: &mut World) {
+    fn place_on_target(&mut self, world: &mut World, occupied: impl Fn(IVec3) -> bool) {
         if !self.controls.place {
             self.place_wait = 0;
             return;
@@ -191,7 +202,7 @@ impl Player {
         let Some(stack) = self.inventory.slot(slot) else {
             return;
         };
-        if !world.is_loaded(cell) || world.block(cell).is_solid() || self.body.overlaps_block(cell) {
+        if !world.is_loaded(cell) || world.block(cell).is_solid() || self.body.overlaps_block(cell) || occupied(cell) {
             return;
         }
         let block = match stack.block {
@@ -269,7 +280,7 @@ mod tests {
         let mut player = Player::new(Vec3::new(8.5, 51.0, 8.5), 0.0, Skin::Player);
         let mut heights = Vec::new();
         while !player.on_ground {
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
             heights.push(player.body.position.y);
         }
         // Minecraft's first ticks of a fall from rest: 0, 0.0784, 0.2337, 0.4643 blocks.
@@ -291,7 +302,7 @@ mod tests {
         }
         let mut player = Player::new(Vec3::new(8.5, 8.0, 8.5), 0.0, Skin::Player);
         for _ in 0..100 {
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
         }
         assert!(player.on_ground);
         assert_eq!(player.body.position.y, 1.0);
@@ -302,7 +313,7 @@ mod tests {
         let mut world = World::empty(IVec3::ONE);
         let mut player = Player::new(Vec3::new(8.5, 0.0, 8.5), 0.0, Skin::Player);
         for _ in 0..400 {
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
         }
         assert!((player.fall_velocity + 3.92).abs() < 1e-2);
         assert!(!player.on_ground);
@@ -312,9 +323,9 @@ mod tests {
     fn standing_stays_on_the_ground_every_tick() {
         let mut world = floor();
         let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
-        player.tick(&mut world);
+        player.tick(&mut world, |_| false);
         for _ in 0..10 {
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
             assert!(player.on_ground);
             assert_eq!(player.body.position.y, 1.0);
         }
@@ -326,7 +337,7 @@ mod tests {
         for walk in [Vec2::Y, Vec2::X, Vec2::new(1.0, 1.0), Vec2::new(-0.5, 0.0)] {
             let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
             player.controls.walk = walk;
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
             let moved = player.body.position - Vec3::new(8.5, 1.0, 8.5);
             let expected = Vec3::new(walk.x, 0.0, -walk.y).clamp_length_max(1.0);
             assert!(moved.abs_diff_eq(expected * WALK_SPEED / TICK_RATE, 1e-5), "{walk}");
@@ -348,7 +359,7 @@ mod tests {
                 if jumping {
                     player.controls.jump = Some(*JUMP_HEIGHTS.end());
                 }
-                player.tick(&mut world);
+                player.tick(&mut world, |_| false);
                 assert!(player.body.position.x < 12.0, "jumping {jumping}");
             }
             assert!(player.body.position.x > 11.0, "jumping {jumping}");
@@ -396,10 +407,10 @@ mod tests {
         let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
         player.controls.attack = true;
         for _ in 0..44 {
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
         }
         assert_eq!(world.block(IVec3::new(8, 2, 6)), Block::Stone);
-        player.tick(&mut world);
+        player.tick(&mut world, |_| false);
         assert_eq!(world.block(IVec3::new(8, 2, 6)), Block::Air);
         assert_eq!(
             player.inventory.slot(0),
@@ -417,13 +428,13 @@ mod tests {
         let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
         player.controls.attack = true;
         for _ in 0..14 {
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
         }
         player.controls.attack = false;
-        player.tick(&mut world);
+        player.tick(&mut world, |_| false);
         player.controls.attack = true;
         for _ in 0..14 {
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
         }
         assert_eq!(
             world.block(IVec3::new(8, 2, 6)),
@@ -432,13 +443,13 @@ mod tests {
         );
         // Looking down at the floor for a tick, then back.
         player.controls.head_pitch = -1.0;
-        player.tick(&mut world);
+        player.tick(&mut world, |_| false);
         player.controls.head_pitch = 0.0;
         for _ in 0..14 {
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
         }
         assert_eq!(world.block(IVec3::new(8, 2, 6)), Block::Dirt);
-        player.tick(&mut world);
+        player.tick(&mut world, |_| false);
         assert_eq!(world.block(IVec3::new(8, 2, 6)), Block::Air);
     }
 
@@ -451,7 +462,7 @@ mod tests {
         player.inventory.add(Block::OakLog(Axis::Y), 2);
         player.controls.place = true;
         player.controls.slot = 1;
-        player.tick(&mut world);
+        player.tick(&mut world, |_| false);
         assert_eq!(
             world.block(IVec3::new(8, 2, 6)),
             Block::OakLog(Axis::Z),
@@ -459,19 +470,19 @@ mod tests {
         );
         // Held on: the next goes on the log just placed, a few ticks later.
         for _ in 0..PLACE_INTERVAL - 1 {
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
         }
         assert_eq!(world.block(IVec3::new(8, 2, 7)), Block::Air);
-        player.tick(&mut world);
+        player.tick(&mut world, |_| false);
         assert_eq!(world.block(IVec3::new(8, 2, 7)), Block::OakLog(Axis::Z));
         assert_eq!(player.inventory.slot(1), None);
         // Nothing is placed from an empty slot, nor where the player stands.
         player.controls.slot = 7;
-        player.tick(&mut world);
+        player.tick(&mut world, |_| false);
         player.controls.slot = 0;
         player.controls.head_pitch = -std::f32::consts::FRAC_PI_2;
         for _ in 0..10 {
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
         }
         assert_eq!(world.block(IVec3::new(8, 1, 8)), Block::Air);
         assert_eq!(player.inventory.slot(0).map(|stack| stack.count), Some(1));
@@ -493,7 +504,7 @@ mod tests {
             if player.on_ground && player.inventory.slot(0).is_some() {
                 player.controls.jump = Some(*JUMP_HEIGHTS.end());
             }
-            player.tick(&mut world);
+            player.tick(&mut world, |_| false);
         }
         for y in 1..=5 {
             assert_eq!(world.block(IVec3::new(8, y, 8)), Block::Cobblestone, "{y}");
@@ -512,12 +523,12 @@ mod tests {
         for height in [0.5, 0.8, 1.25] {
             let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
             while !player.on_ground {
-                player.tick(&mut world);
+                player.tick(&mut world, |_| false);
             }
             player.controls.jump = Some(height);
             let mut peak: f32 = 0.0;
             while {
-                player.tick(&mut world);
+                player.tick(&mut world, |_| false);
                 assert_eq!(player.controls.jump, None, "a request is used or dropped");
                 // Asking again in mid-air does nothing.
                 player.controls.jump = Some(height);
