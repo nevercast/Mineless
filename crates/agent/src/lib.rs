@@ -64,6 +64,8 @@ enum Run {
 struct Host {
     game: Game,
     player: usize,
+    /// What it's called, as its log lines show.
+    name: String,
     /// Ticks still to skip after a `wait_ticks`.
     waiting: u32,
     limits: StoreLimits,
@@ -83,7 +85,7 @@ impl HostError for Yield {}
 
 impl Agent {
     /// Loads a script to drive the player at `player` in the game's players.
-    pub fn load(wasm: &[u8], player: usize) -> Result<Agent, Error> {
+    pub fn load(wasm: &[u8], player: usize, name: String) -> Result<Agent, Error> {
         let mut config = Config::default();
         config.consume_fuel(true);
         let engine = Engine::new(&config);
@@ -91,6 +93,7 @@ impl Agent {
         let host = Host {
             game: Game::default(),
             player,
+            name,
             waiting: 0,
             limits: StoreLimitsBuilder::new().memory_size(MEMORY_LIMIT).build(),
         };
@@ -103,6 +106,10 @@ impl Agent {
             store,
             run: Run::Start(run),
         })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.store.data().name
     }
 
     /// Gives the script its turn for this tick, before the game ticks. A script that fails is stopped and its player left
@@ -289,7 +296,7 @@ fn log(caller: Caller<'_, Host>, address: u32, len: u32) -> Result<(), Error> {
     memory(&caller)?
         .read(&caller, address as usize, &mut text)
         .map_err(|_| Error::new("log text runs past the end of memory"))?;
-    eprintln!("[agent {}] {}", caller.data().player, String::from_utf8_lossy(&text));
+    eprintln!("[{}] {}", caller.data().name, String::from_utf8_lossy(&text));
     Ok(())
 }
 
@@ -361,7 +368,7 @@ mod tests {
                 (data (i32.const 16) "\00\00\80\3f")
                 (func (export "run") (local $i i32) {body}))"#
         );
-        Agent::load(wat.as_bytes(), 0).expect("the test script loads")
+        Agent::load(wat.as_bytes(), 0, "test".to_owned()).expect("the test script loads")
     }
 
     fn walking(game: &Game) -> bool {

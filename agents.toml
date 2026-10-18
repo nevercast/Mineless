@@ -1,0 +1,29 @@
+# Who plays. Each [[agent]] is a player driven by a script compiled to WASM. Build the sample scripts with
+#   cargo build --manifest-path scripts/Cargo.toml --workspace --target wasm32-unknown-unknown --release
+# An agent whose script isn't built yet is left out. Script paths are relative to this file, and skins are player, autumn,
+# cyber-a or cyber-b. Pick another file with --agents.
+
+[[agent]]
+name = "Wanda"
+skin = "autumn"
+script = "scripts/target/wasm32-unknown-unknown/release/wander.wasm"
+
+[[agent]]
+name = "Rover"
+skin = "cyber-a"
+script = "scripts/target/wasm32-unknown-unknown/release/wander.wasm"
+
+[[agent]]
+name = "Drift"
+skin = "cyber-b"
+script = "scripts/target/wasm32-unknown-unknown/release/wander.wasm"
+
+[[agent]]
+name = "Moss"
+skin = "player"
+script = "scripts/target/wasm32-unknown-unknown/release/wander.wasm"
+
+[[agent]]
+name = "Pillar"
+skin = "player"
+script = "scripts/target/wasm32-unknown-unknown/release/pillar.wasm"

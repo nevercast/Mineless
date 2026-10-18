@@ -12,6 +12,7 @@ glam = { workspace = true, features = ["bytemuck"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "1"
 sim = { path = "crates/sim" }
+toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 wgpu = "30"
 winit = "0.30"
 
