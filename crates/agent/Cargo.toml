@@ -1,0 +1,17 @@
+[package]
+name = "agent"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agent-api = { path = "../agent-api" }
+glam.workspace = true
+sim = { path = "../sim" }
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch"] }
+
+[dev-dependencies]
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch", "wat"] }
+
+[lints]
+workspace = true

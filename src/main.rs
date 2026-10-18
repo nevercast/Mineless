@@ -8,6 +8,7 @@ mod spectator;
 mod visibility;
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+use agent::Agent;
 use glam::{IVec2, IVec3, Vec2, Vec3, Vec3Swizzles, vec3};
 use loading::Loading;
 use meshed_area::MeshedArea;
@@ -31,6 +33,8 @@ use spectator::Spectator;
 struct App {
     /// Players are empty until the world is loaded, since they stand on it.
     game: Game,
+    /// The script driving the player after the test players, if one was given.
+    agent: Option<Agent>,
     seed: u32,
     /// The world still being built, until play starts.
     loading: Option<Loading>,
@@ -134,6 +138,9 @@ impl ApplicationHandler for App {
                     self.loading = None;
                     eprintln!("Playable after {:.2} s", self.launched.elapsed().as_secs_f32());
                     self.game.players = test_players(&self.game.world);
+                    if self.agent.is_some() {
+                        self.game.players.push(scripted_player(&self.game.world));
+                    }
                     let ground = self.game.world.column_top(START_POSITION.x as i32, START_POSITION.z as i32);
                     self.camera = start_camera(ground);
                     self.last_frame = Instant::now();
@@ -160,10 +167,7 @@ impl ApplicationHandler for App {
                     self.unsimulated -= 1.0 / TICK_RATE;
                     self.ticks += 1;
                     let tick_start = Instant::now();
-                    self.game.tick();
-                    for player in &mut self.game.players {
-                        wander(player, self.camera.position);
-                    }
+                    tick(&mut self.game, self.agent.as_mut(), self.camera.position);
                     self.timings.ticks += 1;
                     self.timings.tick_seconds += tick_start.elapsed().as_secs_f32();
                 }
@@ -267,21 +271,32 @@ const WORLD: Extent = Extent {
 /// The world unless `--seed` picks another. This one shows sea, beach, uplands, forest and a
 /// floating lump from the start view.
 const SEED: u32 = 142;
-const USAGE: &str = "usage: mineless [--seed <u32>]";
+const USAGE: &str = "usage: mineless [--seed <u32>] [--agent <script.wasm>]";
 
-/// The seed from the command-line arguments, not counting the program name.
-fn parse_seed(mut args: impl Iterator<Item = String>) -> Result<u32, String> {
-    let mut seed = SEED;
+#[derive(PartialEq, Debug)]
+struct Options {
+    seed: u32,
+    /// A script compiled to WASM to drive one more player.
+    agent: Option<PathBuf>,
+}
+
+/// The options from the command-line arguments, not counting the program name.
+fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
+    let mut options = Options { seed: SEED, agent: None };
     while let Some(arg) = args.next() {
-        if arg != "--seed" {
-            return Err(format!("unknown argument {arg:?}"));
+        let value = match arg.as_str() {
+            "--seed" | "--agent" => args.next().ok_or(format!("{arg} needs a value"))?,
+            _ => return Err(format!("unknown argument {arg:?}")),
+        };
+        if arg == "--seed" {
+            options.seed = value
+                .parse()
+                .map_err(|_| format!("--seed {value:?} is not a whole number from 0 to {}", u32::MAX))?;
+        } else {
+            options.agent = Some(value.into());
         }
-        let value = args.next().ok_or("--seed needs a value")?;
-        seed = value
-            .parse()
-            .map_err(|_| format!("--seed {value:?} is not a whole number from 0 to {}", u32::MAX))?;
     }
-    Ok(seed)
+    Ok(options)
 }
 
 /// The start view looks over the forest past a snowy upland and an arch to the sea, framed for
@@ -322,6 +337,9 @@ const START_TICKS: u64 = DAY_TICKS * 3 / 8;
 /// Blocks between neighbouring players in the starting grid, and players along each side of it.
 const PLAYER_SPACING: i32 = 64;
 const PLAYERS_ACROSS: i32 = 5;
+const TEST_PLAYERS: usize = (PLAYERS_ACROSS * PLAYERS_ACROSS) as usize;
+/// Blocks from the start camera, toward where it looks, that a scripted player starts.
+const SCRIPTED_PLAYER_DISTANCE: f32 = 6.0;
 
 /// A grid of players round the origin, skins in turn, so ticks have a crowd to simulate. The
 /// first builds a pillar under itself up out of the sea, the second drops from twelve blocks up and
@@ -358,6 +376,26 @@ const DIG_PITCH: f32 = -55f32.to_radians();
 /// Blocks a builder starts with, and so how tall its pillar grows: enough to rise out of the sea
 /// from where the first test player stands.
 const PILLAR_HEIGHT: u8 = 24;
+
+/// Advances the game a tick: the script takes its turn, everyone moves, and the stand-in agent decides what the test players
+/// do next.
+fn tick(game: &mut Game, agent: Option<&mut Agent>, camera: Vec3) {
+    if let Some(agent) = agent
+        && let Err(error) = agent.turn(game)
+    {
+        eprintln!("The script stopped: {error}");
+    }
+    game.tick();
+    for player in game.players.iter_mut().take(TEST_PLAYERS) {
+        wander(player, camera);
+    }
+}
+
+/// The player a script drives, standing in view of the start camera.
+fn scripted_player(world: &World) -> Player {
+    let spot = START_POSITION + (START_TARGET - START_POSITION).with_y(0.0).normalize() * SCRIPTED_PLAYER_DISTANCE;
+    Player::new(ground_at(world, spot.x as i32, spot.z as i32), 0.0, Skin::Player)
+}
 
 /// Stand-in agent: drives a player only through its controls, as a real agent will. Walkers walk
 /// forward, jump at anything in the way, and turn away if it's still blocking on the way back
@@ -411,14 +449,25 @@ fn look_toward(player: &mut Player, target: Vec3) {
 
 fn main() {
     env_logger::init();
-    let seed = parse_seed(std::env::args().skip(1)).unwrap_or_else(|error| {
+    let Options { seed, agent } = parse_args(std::env::args().skip(1)).unwrap_or_else(|error| {
         eprintln!("{error}\n{USAGE}");
         std::process::exit(2);
+    });
+    // Loaded before the world is built, so a bad script is reported straight away.
+    let agent = agent.map(|path| {
+        let loaded = std::fs::read(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|wasm| Agent::load(&wasm, TEST_PLAYERS).map_err(|error| error.to_string()));
+        loaded.unwrap_or_else(|error| {
+            eprintln!("Can't load {}: {error}", path.display());
+            std::process::exit(2);
+        })
     });
     let launched = Instant::now();
     let event_loop = EventLoop::new().expect("create event loop");
     let mut app = App {
         game: Game::default(),
+        agent,
         seed,
         loading: Some(Loading::new(WORLD, seed, START_POSITION.xz())),
         meshed: MeshedArea::new(WORLD),
@@ -443,8 +492,12 @@ fn main() {
 mod tests {
     use super::*;
 
+    fn options_from(args: &[&str]) -> Result<Options, String> {
+        parse_args(args.iter().map(|arg| arg.to_string()))
+    }
+
     fn seed_from(args: &[&str]) -> Result<u32, String> {
-        parse_seed(args.iter().map(|arg| arg.to_string()))
+        options_from(args).map(|options| options.seed)
     }
 
     #[test]
@@ -455,6 +508,18 @@ mod tests {
     }
 
     #[test]
+    fn agent_comes_from_its_flag_alongside_the_seed() {
+        assert_eq!(options_from(&[]).map(|options| options.agent), Ok(None));
+        assert_eq!(
+            options_from(&["--agent", "pillar.wasm", "--seed", "7"]),
+            Ok(Options {
+                seed: 7,
+                agent: Some("pillar.wasm".into())
+            })
+        );
+    }
+
+    #[test]
     fn bad_arguments_are_errors() {
         for args in [
             &["--seed"][..],
@@ -462,6 +527,7 @@ mod tests {
             &["--seed", "4294967296"],
             &["--seed", "abc"],
             &["--size", "3"],
+            &["--agent"],
             &["108"],
         ] {
             assert!(seed_from(args).is_err(), "{args:?}");
@@ -496,9 +562,8 @@ mod tests {
         let (low, high) = (small_world.min().as_vec3() + 1.0, small_world.max().as_vec3() - 1.0);
         // An hour of simulation.
         for _ in 0..(3600.0 * TICK_RATE) as u32 {
-            game.tick();
-            for player in &mut game.players {
-                wander(player, camera);
+            tick(&mut game, None, camera);
+            for player in &game.players {
                 let position = player.avatar(1.0).position;
                 assert!(position.x > low.x && position.z > low.z, "{position}");
                 assert!(position.x < high.x && position.z < high.z, "{position}");

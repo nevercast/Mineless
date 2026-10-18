@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+agent = { path = "crates/agent" }
 bytemuck = { version = "1", features = ["derive"] }
 env_logger = "0.11"
 glam = { workspace = true, features = ["bytemuck"] }
@@ -18,7 +19,7 @@ winit = "0.30"
 workspace = true
 
 [workspace]
-members = ["crates/agent-api", "crates/sim"]
+members = ["crates/agent", "crates/agent-api", "crates/sim"]
 
 [workspace.package]
 edition = "2024"
