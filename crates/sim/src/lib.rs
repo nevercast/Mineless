@@ -3,6 +3,7 @@
 
 pub mod avatar;
 pub mod inventory;
+mod mining;
 mod physics;
 pub mod player;
 pub mod world;

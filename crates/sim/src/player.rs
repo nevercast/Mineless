@@ -1,10 +1,11 @@
 //! A player in the simulation: a collision body driven only through its `Controls`, stepped at a
 //! fixed tick and drawn as an avatar interpolated between ticks.
 
-use glam::{BVec3, Vec2, Vec3};
+use glam::{BVec3, IVec3, Vec2, Vec3};
 
 use crate::avatar::{Avatar, Pose, Skin};
 use crate::inventory::Inventory;
+use crate::mining;
 use crate::physics::Body;
 use crate::world::{Block, Hit, World};
 
@@ -41,6 +42,8 @@ pub struct Controls {
     /// Jump to peak this many blocks up, clamped to `JUMP_HEIGHTS`. Taken on the next tick that
     /// starts on the ground, and dropped otherwise.
     pub jump: Option<f32>,
+    /// Held to break the targeted block, which takes as long as `mining::break_ticks` says. Looking away starts over.
+    pub attack: bool,
 }
 
 pub struct Player {
@@ -48,6 +51,10 @@ pub struct Player {
     pub skin: Skin,
     pub inventory: Inventory,
     body: Body,
+    /// The block attack has been held on, and for how many ticks.
+    breaking: Option<(IVec3, u32)>,
+    /// Blocks broken so far, which picks each one's drop.
+    broken: u32,
     /// Vertical speed in blocks per tick; up is positive.
     fall_velocity: f32,
     on_ground: bool,
@@ -63,6 +70,8 @@ impl Player {
             skin,
             controls: Controls { yaw, ..Default::default() },
             inventory: Inventory::default(),
+            breaking: None,
+            broken: 0,
             body: Body {
                 position: feet,
                 half_width: 0.3,
@@ -101,8 +110,9 @@ impl Player {
     }
 
     /// Advances one tick. Returns which axes collision cut short.
-    pub fn tick(&mut self, world: &World) -> BVec3 {
+    pub fn tick(&mut self, world: &mut World) -> BVec3 {
         self.previous = (self.body.position, self.swing, self.swing_phase);
+        self.break_target(world);
         let controls = self.controls;
         if let Some(height) = self.controls.jump.take()
             && self.on_ground
@@ -126,6 +136,30 @@ impl Player {
         self.swing += ((walked * 4.0).min(1.0) - self.swing) * SWING_EASE;
         self.swing_phase += self.swing * STRIDE_PER_TICK;
         blocked
+    }
+
+    /// Holds attack on the targeted block for another tick, and breaks it into the inventory once it has been held long enough.
+    /// A drop that doesn't fit is lost.
+    fn break_target(&mut self, world: &mut World) {
+        let Some(hit) = self.target(world).filter(|_| self.controls.attack) else {
+            self.breaking = None;
+            return;
+        };
+        let held = match self.breaking {
+            Some((block, ticks)) if block == hit.block => ticks + 1,
+            _ => 1,
+        };
+        let block = world.block(hit.block);
+        if mining::break_ticks(block).is_some_and(|needed| held >= needed) {
+            world.set_block(hit.block, Block::Air);
+            if let Some(drop) = mining::drop(block, hit.block, self.broken) {
+                self.inventory.add(drop, 1);
+            }
+            self.broken += 1;
+            self.breaking = None;
+        } else {
+            self.breaking = Some((hit.block, held));
+        }
     }
 
     /// How to draw the player `alpha` of the way from the last tick to the next.
@@ -173,8 +207,7 @@ fn launch_velocity(height: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::Block;
-    use glam::IVec3;
+    use crate::inventory::Stack;
 
     /// A stone floor at y = 0.
     fn floor() -> World {
@@ -189,11 +222,11 @@ mod tests {
 
     #[test]
     fn falls_like_minecraft_and_lands_flush() {
-        let world = floor();
+        let mut world = floor();
         let mut player = Player::new(Vec3::new(8.5, 51.0, 8.5), 0.0, Skin::Player);
         let mut heights = Vec::new();
         while !player.on_ground {
-            player.tick(&world);
+            player.tick(&mut world);
             heights.push(player.body.position.y);
         }
         // Minecraft's first ticks of a fall from rest: 0, 0.0784, 0.2337, 0.4643 blocks.
@@ -215,7 +248,7 @@ mod tests {
         }
         let mut player = Player::new(Vec3::new(8.5, 8.0, 8.5), 0.0, Skin::Player);
         for _ in 0..100 {
-            player.tick(&world);
+            player.tick(&mut world);
         }
         assert!(player.on_ground);
         assert_eq!(player.body.position.y, 1.0);
@@ -223,10 +256,10 @@ mod tests {
 
     #[test]
     fn falling_speed_settles_at_terminal_velocity() {
-        let world = World::empty(IVec3::ONE);
+        let mut world = World::empty(IVec3::ONE);
         let mut player = Player::new(Vec3::new(8.5, 0.0, 8.5), 0.0, Skin::Player);
         for _ in 0..400 {
-            player.tick(&world);
+            player.tick(&mut world);
         }
         assert!((player.fall_velocity + 3.92).abs() < 1e-2);
         assert!(!player.on_ground);
@@ -234,11 +267,11 @@ mod tests {
 
     #[test]
     fn standing_stays_on_the_ground_every_tick() {
-        let world = floor();
+        let mut world = floor();
         let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
-        player.tick(&world);
+        player.tick(&mut world);
         for _ in 0..10 {
-            player.tick(&world);
+            player.tick(&mut world);
             assert!(player.on_ground);
             assert_eq!(player.body.position.y, 1.0);
         }
@@ -246,11 +279,11 @@ mod tests {
 
     #[test]
     fn walks_at_minecraft_speed_in_any_direction() {
-        let world = floor();
+        let mut world = floor();
         for walk in [Vec2::Y, Vec2::X, Vec2::new(1.0, 1.0), Vec2::new(-0.5, 0.0)] {
             let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
             player.controls.walk = walk;
-            player.tick(&world);
+            player.tick(&mut world);
             let moved = player.body.position - Vec3::new(8.5, 1.0, 8.5);
             let expected = Vec3::new(walk.x, 0.0, -walk.y).clamp_length_max(1.0);
             assert!(moved.abs_diff_eq(expected * WALK_SPEED / TICK_RATE, 1e-5), "{walk}");
@@ -272,7 +305,7 @@ mod tests {
                 if jumping {
                     player.controls.jump = Some(*JUMP_HEIGHTS.end());
                 }
-                player.tick(&world);
+                player.tick(&mut world);
                 assert!(player.body.position.x < 12.0, "jumping {jumping}");
             }
             assert!(player.body.position.x > 11.0, "jumping {jumping}");
@@ -314,22 +347,75 @@ mod tests {
     }
 
     #[test]
+    fn holding_attack_breaks_the_target_in_its_time_and_keeps_the_drop() {
+        let mut world = floor();
+        world.set_block(IVec3::new(8, 2, 6), Block::Stone);
+        let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
+        player.controls.attack = true;
+        for _ in 0..44 {
+            player.tick(&mut world);
+        }
+        assert_eq!(world.block(IVec3::new(8, 2, 6)), Block::Stone);
+        player.tick(&mut world);
+        assert_eq!(world.block(IVec3::new(8, 2, 6)), Block::Air);
+        assert_eq!(
+            player.inventory.slot(0),
+            Some(Stack {
+                block: Block::Cobblestone,
+                count: 1
+            })
+        );
+    }
+
+    #[test]
+    fn looking_away_or_letting_go_starts_breaking_over() {
+        let mut world = floor();
+        world.set_block(IVec3::new(8, 2, 6), Block::Dirt);
+        let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
+        player.controls.attack = true;
+        for _ in 0..14 {
+            player.tick(&mut world);
+        }
+        player.controls.attack = false;
+        player.tick(&mut world);
+        player.controls.attack = true;
+        for _ in 0..14 {
+            player.tick(&mut world);
+        }
+        assert_eq!(
+            world.block(IVec3::new(8, 2, 6)),
+            Block::Dirt,
+            "fifteen ticks held, but not in a row"
+        );
+        // Looking down at the floor for a tick, then back.
+        player.controls.head_pitch = -1.0;
+        player.tick(&mut world);
+        player.controls.head_pitch = 0.0;
+        for _ in 0..14 {
+            player.tick(&mut world);
+        }
+        assert_eq!(world.block(IVec3::new(8, 2, 6)), Block::Dirt);
+        player.tick(&mut world);
+        assert_eq!(world.block(IVec3::new(8, 2, 6)), Block::Air);
+    }
+
+    #[test]
     fn minecraft_jump_velocity_peaks_at_its_usual_height() {
         assert!((peak_height(0.42) - 1.2522).abs() < 1e-3);
     }
 
     #[test]
     fn jumps_peak_at_the_requested_height() {
-        let world = floor();
+        let mut world = floor();
         for height in [0.5, 0.8, 1.25] {
             let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
             while !player.on_ground {
-                player.tick(&world);
+                player.tick(&mut world);
             }
             player.controls.jump = Some(height);
             let mut peak: f32 = 0.0;
             while {
-                player.tick(&world);
+                player.tick(&mut world);
                 assert_eq!(player.controls.jump, None, "a request is used or dropped");
                 // Asking again in mid-air does nothing.
                 player.controls.jump = Some(height);

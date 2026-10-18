@@ -81,7 +81,7 @@ pub(super) fn gradient_3d(seed: u32, point: Vec3) -> f32 {
 }
 
 /// An integer hash of a lattice point, so every platform agrees.
-pub(super) fn hash(seed: u32, x: i32, y: i32, z: i32) -> u32 {
+pub(crate) fn hash(seed: u32, x: i32, y: i32, z: i32) -> u32 {
     let mut hash = seed
         ^ (x as u32).wrapping_mul(0x27d4_eb2d)
         ^ (y as u32).wrapping_mul(0x9e37_79b1).rotate_left(8)
