@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use glam::{IVec2, IVec3, Vec2, Vec3, Vec3Swizzles};
 
 mod caves;
-mod noise;
+pub(crate) mod noise;
 mod trees;
 
 use super::chunk::Chunk;

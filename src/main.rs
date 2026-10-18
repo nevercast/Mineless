@@ -161,7 +161,7 @@ impl ApplicationHandler for App {
                     self.ticks += 1;
                     let tick_start = Instant::now();
                     for player in &mut self.players {
-                        wander(player, &self.world, self.camera.position);
+                        wander(player, &mut self.world, self.camera.position);
                     }
                     self.timings.ticks += 1;
                     self.timings.tick_seconds += tick_start.elapsed().as_secs_f32();
@@ -320,8 +320,8 @@ const PLAYER_SPACING: i32 = 64;
 const PLAYERS_ACROSS: i32 = 5;
 
 /// A grid of players round the origin, skins in turn, so ticks have a crowd to simulate. The
-/// first stands idle, the second drops from twelve blocks up and then stands idle too, and the
-/// rest walk.
+/// first stands idle, the second drops from twelve blocks up and then stands idle too, the fifth digs
+/// at the ground in front of it, and the rest walk.
 fn test_players(world: &World) -> Vec<Player> {
     (0..PLAYERS_ACROSS)
         .flat_map(|x| (0..PLAYERS_ACROSS).map(move |z| IVec2::new(x, z)))
@@ -334,7 +334,10 @@ fn test_players(world: &World) -> Vec<Player> {
             }
             let yaw = (index as f32 * 123.0).to_radians();
             let mut player = Player::new(position, yaw, Skin::ALL[index % Skin::ALL.len()]);
-            if index > 1 {
+            if index == 4 {
+                player.controls.attack = true;
+                player.controls.head_pitch = DIG_PITCH;
+            } else if index > 1 {
                 player.controls.walk = Vec2::Y;
             }
             player
@@ -342,12 +345,16 @@ fn test_players(world: &World) -> Vec<Player> {
         .collect()
 }
 
+/// How far below level a digger looks: at the ground just in front of its feet.
+const DIG_PITCH: f32 = -55f32.to_radians();
+
 /// Stand-in agent: drives a player only through its controls, as a real agent will. Walkers walk
 /// forward, jump at anything in the way, and turn away if it's still blocking on the way back
-/// down. Everyone else stands still and watches the spectator's camera when it comes close.
-fn wander(player: &mut Player, world: &World, camera: Vec3) {
+/// down. Diggers keep digging whatever they look at, until nothing is left in reach. Everyone
+/// else stands still and watches the spectator's camera when it comes close.
+fn wander(player: &mut Player, world: &mut World, camera: Vec3) {
     let blocked = player.tick(world);
-    if player.controls.walk == Vec2::ZERO {
+    if player.controls.walk == Vec2::ZERO && !player.controls.attack {
         look_toward(player, camera);
     } else if blocked.x || blocked.z {
         if player.is_on_ground() {
@@ -467,14 +474,14 @@ mod tests {
             half_width: 160,
             height: WORLD.height,
         };
-        let world = sim::world::terrain::generate(small_world, SEED);
+        let mut world = sim::world::terrain::generate(small_world, SEED);
         let mut players = test_players(&world);
         let (low, high) = (small_world.min().as_vec3() + 1.0, small_world.max().as_vec3() - 1.0);
         let camera = ground_at(&world, 0, 0);
         // An hour of simulation.
         for _ in 0..(3600.0 * TICK_RATE) as u32 {
             for player in &mut players {
-                wander(player, &world, camera);
+                wander(player, &mut world, camera);
                 let position = player.avatar(1.0).position;
                 assert!(position.x > low.x && position.z > low.z, "{position}");
                 assert!(position.x < high.x && position.z < high.z, "{position}");
