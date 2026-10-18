@@ -22,13 +22,15 @@ use loading::Loading;
 use meshed_area::MeshedArea;
 use render::{Camera, Frustum, Renderer};
 use sim::avatar::{Avatar, Skin};
+use sim::game::Game;
 use sim::player::{EYE_HEIGHT, JUMP_HEIGHTS, Player, TICK_RATE};
 use sim::world::{Block, CHUNK_SIZE, ChunkSet, Extent, World};
 use sky::{DAY_TICKS, Sky};
 use spectator::Spectator;
 
 struct App {
-    world: World,
+    /// Players are empty until the world is loaded, since they stand on it.
+    game: Game,
     seed: u32,
     /// The world still being built, until play starts.
     loading: Option<Loading>,
@@ -38,8 +40,6 @@ struct App {
     loading_drawn: Option<Instant>,
     /// When the program started, for reporting how long loading took.
     launched: Instant,
-    /// Empty until the world is loaded, since they stand on it.
-    players: Vec<Player>,
     /// Simulation ticks since the world began.
     ticks: u64,
     /// Seconds of simulation time owed but not yet ticked.
@@ -130,11 +130,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested if self.loading.is_some() => {
                 let loading = self.loading.as_mut().expect("checked by the match guard");
-                if loading.work(&mut self.world, &mut self.meshed, renderer, LOADING_SLICE) {
+                if loading.work(&mut self.game.world, &mut self.meshed, renderer, LOADING_SLICE) {
                     self.loading = None;
                     eprintln!("Playable after {:.2} s", self.launched.elapsed().as_secs_f32());
-                    self.players = test_players(&self.world);
-                    let ground = self.world.column_top(START_POSITION.x as i32, START_POSITION.z as i32);
+                    self.game.players = test_players(&self.game.world);
+                    let ground = self.game.world.column_top(START_POSITION.x as i32, START_POSITION.z as i32);
                     self.camera = start_camera(ground);
                     self.last_frame = Instant::now();
                     window.set_title(&format!("Mineless | seed {}", self.seed));
@@ -153,27 +153,28 @@ impl ApplicationHandler for App {
                 self.last_frame = now;
                 self.spectator.update(&mut self.camera, seconds);
                 let camera = self.camera.position.xz();
-                self.meshed.update(&mut self.world, renderer, camera, MESHING_SLICE);
+                self.meshed.update(&mut self.game.world, renderer, camera, MESHING_SLICE);
                 // Simulate in fixed ticks; a long stall drops time rather than ticking to catch up.
                 self.unsimulated = (self.unsimulated + seconds).min(MAX_CATCH_UP);
                 while self.unsimulated >= 1.0 / TICK_RATE {
                     self.unsimulated -= 1.0 / TICK_RATE;
                     self.ticks += 1;
                     let tick_start = Instant::now();
-                    for player in &mut self.players {
-                        wander(player, &mut self.world, self.camera.position);
+                    self.game.tick();
+                    for player in &mut self.game.players {
+                        wander(player, self.camera.position);
                     }
                     self.timings.ticks += 1;
                     self.timings.tick_seconds += tick_start.elapsed().as_secs_f32();
                 }
                 let alpha = self.unsimulated * TICK_RATE;
-                let avatars: Vec<Avatar> = self.players.iter().map(|p| p.avatar(alpha)).collect();
-                renderer.outline(&targeted_blocks(&self.players, &self.world));
+                let avatars: Vec<Avatar> = self.game.players.iter().map(|p| p.avatar(alpha)).collect();
+                renderer.outline(&targeted_blocks(&self.game));
                 let day_fraction = ((self.ticks % DAY_TICKS) as f32 + alpha) / DAY_TICKS as f32;
                 // From inside rock the back faces of the rock are culled, so it is see-through and every cave around shows. The
                 // walk starts at the camera's chunk as open space and would stop at the solid chunks round it, so it waits until
                 // the camera is back in the open. The x-ray view shows caves however walled off they are.
-                let in_rock = self.world.block(self.camera.position.floor().as_ivec3()).is_solid();
+                let in_rock = self.game.world.block(self.camera.position.floor().as_ivec3()).is_solid();
                 let culling = self.culling && !in_rock && !self.xray;
                 let walk_start = Instant::now();
                 let seen = culling.then(|| seen_chunks(&self.camera, &renderer.frustum(&self.camera), &self.meshed));
@@ -233,8 +234,11 @@ fn seen_chunks(camera: &Camera, frustum: &Frustum, meshed: &MeshedArea) -> Chunk
 }
 
 /// The blocks players are aiming at.
-fn targeted_blocks(players: &[Player], world: &World) -> Vec<IVec3> {
-    players.iter().filter_map(|player| Some(player.target(world)?.block)).collect()
+fn targeted_blocks(game: &Game) -> Vec<IVec3> {
+    game.players
+        .iter()
+        .filter_map(|player| Some(player.target(&game.world)?.block))
+        .collect()
 }
 
 /// Click to capture the mouse for looking around, Escape to give it back. Returns whether the
@@ -360,8 +364,8 @@ const PILLAR_HEIGHT: u8 = 24;
 /// down. Diggers keep digging whatever they look at, until nothing is left in reach. Builders look
 /// straight down and jump while they have blocks, placing one under their feet each jump. Everyone
 /// else stands still and watches the spectator's camera when it comes close.
-fn wander(player: &mut Player, world: &mut World, camera: Vec3) {
-    let blocked = player.tick(world);
+fn wander(player: &mut Player, camera: Vec3) {
+    let blocked = player.blocked();
     if player.controls.place {
         if player.is_on_ground() && player.inventory.slot(0).is_some() {
             player.controls.jump = Some(*JUMP_HEIGHTS.end());
@@ -414,13 +418,12 @@ fn main() {
     let launched = Instant::now();
     let event_loop = EventLoop::new().expect("create event loop");
     let mut app = App {
-        world: World::default(),
+        game: Game::default(),
         seed,
         loading: Some(Loading::new(WORLD, seed, START_POSITION.xz())),
         meshed: MeshedArea::new(WORLD),
         loading_drawn: None,
         launched,
-        players: Vec::new(),
         camera: start_camera(0),
         ticks: START_TICKS,
         unsimulated: 0.0,
@@ -486,14 +489,16 @@ mod tests {
             half_width: 160,
             height: WORLD.height,
         };
-        let mut world = sim::world::terrain::generate(small_world, SEED);
-        let mut players = test_players(&world);
-        let (low, high) = (small_world.min().as_vec3() + 1.0, small_world.max().as_vec3() - 1.0);
+        let world = sim::world::terrain::generate(small_world, SEED);
         let camera = ground_at(&world, 0, 0);
+        let players = test_players(&world);
+        let mut game = Game { world, players };
+        let (low, high) = (small_world.min().as_vec3() + 1.0, small_world.max().as_vec3() - 1.0);
         // An hour of simulation.
         for _ in 0..(3600.0 * TICK_RATE) as u32 {
-            for player in &mut players {
-                wander(player, &mut world, camera);
+            game.tick();
+            for player in &mut game.players {
+                wander(player, camera);
                 let position = player.avatar(1.0).position;
                 assert!(position.x > low.x && position.z > low.z, "{position}");
                 assert!(position.x < high.x && position.z < high.z, "{position}");
