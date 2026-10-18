@@ -7,7 +7,7 @@ mod sky;
 mod spectator;
 mod visibility;
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,7 @@ use meshed_area::MeshedArea;
 use render::{Camera, Frustum, Renderer};
 use sim::avatar::{Avatar, Skin};
 use sim::player::{EYE_HEIGHT, JUMP_HEIGHTS, Player, TICK_RATE};
-use sim::world::{CHUNK_SIZE, ChunkSet, Extent, World};
+use sim::world::{Block, CHUNK_SIZE, ChunkSet, Extent, World};
 use sky::{DAY_TICKS, Sky};
 use spectator::Spectator;
 
@@ -320,8 +320,8 @@ const PLAYER_SPACING: i32 = 64;
 const PLAYERS_ACROSS: i32 = 5;
 
 /// A grid of players round the origin, skins in turn, so ticks have a crowd to simulate. The
-/// first stands idle, the second drops from twelve blocks up and then stands idle too, the fifth digs
-/// at the ground in front of it, and the rest walk.
+/// first builds a pillar under itself up out of the sea, the second drops from twelve blocks up and
+/// then stands idle, the fifth digs at the ground in front of it, and the rest walk.
 fn test_players(world: &World) -> Vec<Player> {
     (0..PLAYERS_ACROSS)
         .flat_map(|x| (0..PLAYERS_ACROSS).map(move |z| IVec2::new(x, z)))
@@ -334,7 +334,11 @@ fn test_players(world: &World) -> Vec<Player> {
             }
             let yaw = (index as f32 * 123.0).to_radians();
             let mut player = Player::new(position, yaw, Skin::ALL[index % Skin::ALL.len()]);
-            if index == 4 {
+            if index == 0 {
+                player.inventory.add(Block::Cobblestone, PILLAR_HEIGHT);
+                player.controls.place = true;
+                player.controls.head_pitch = -FRAC_PI_2;
+            } else if index == 4 {
                 player.controls.attack = true;
                 player.controls.head_pitch = DIG_PITCH;
             } else if index > 1 {
@@ -347,14 +351,22 @@ fn test_players(world: &World) -> Vec<Player> {
 
 /// How far below level a digger looks: at the ground just in front of its feet.
 const DIG_PITCH: f32 = -55f32.to_radians();
+/// Blocks a builder starts with, and so how tall its pillar grows: enough to rise out of the sea
+/// from where the first test player stands.
+const PILLAR_HEIGHT: u8 = 24;
 
 /// Stand-in agent: drives a player only through its controls, as a real agent will. Walkers walk
 /// forward, jump at anything in the way, and turn away if it's still blocking on the way back
-/// down. Diggers keep digging whatever they look at, until nothing is left in reach. Everyone
+/// down. Diggers keep digging whatever they look at, until nothing is left in reach. Builders look
+/// straight down and jump while they have blocks, placing one under their feet each jump. Everyone
 /// else stands still and watches the spectator's camera when it comes close.
 fn wander(player: &mut Player, world: &mut World, camera: Vec3) {
     let blocked = player.tick(world);
-    if player.controls.walk == Vec2::ZERO && !player.controls.attack {
+    if player.controls.place {
+        if player.is_on_ground() && player.inventory.slot(0).is_some() {
+            player.controls.jump = Some(*JUMP_HEIGHTS.end());
+        }
+    } else if player.controls.walk == Vec2::ZERO && !player.controls.attack {
         look_toward(player, camera);
     } else if blocked.x || blocked.z {
         if player.is_on_ground() {

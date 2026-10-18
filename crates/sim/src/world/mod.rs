@@ -123,6 +123,11 @@ impl World {
         self.chunks.insert(position, chunk);
     }
 
+    /// Whether the chunk holding `position` is loaded, so a block can be set there.
+    pub fn is_loaded(&self, position: IVec3) -> bool {
+        self.chunks.contains_key(&split(position).0)
+    }
+
     /// The block at a world position; unloaded space is air.
     pub fn block(&self, position: IVec3) -> Block {
         let (chunk, local) = split(position);
