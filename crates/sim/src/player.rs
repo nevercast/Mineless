@@ -4,10 +4,10 @@
 use glam::{BVec3, IVec3, Vec2, Vec3};
 
 use crate::avatar::{Avatar, Pose, Skin};
-use crate::inventory::Inventory;
+use crate::inventory::{HOTBAR, Inventory};
 use crate::mining;
 use crate::physics::Body;
-use crate::world::{Block, Hit, World};
+use crate::world::{Axis, Block, Hit, World};
 
 /// Simulation ticks per second, as in Minecraft.
 pub const TICK_RATE: f32 = 20.0;
@@ -27,6 +27,8 @@ pub const JUMP_HEIGHTS: std::ops::RangeInclusive<f32> = 0.5..=1.25;
 pub const EYE_HEIGHT: f32 = 1.62;
 /// How far from the eyes a player can reach a block, as in Minecraft.
 pub const REACH: f32 = 4.5;
+/// Ticks between blocks placed while place is held, as in Minecraft.
+const PLACE_INTERVAL: u32 = 4;
 
 /// Everything whoever drives a player can ask of it. Read at the start of every tick.
 #[derive(Clone, Copy, Default)]
@@ -44,6 +46,11 @@ pub struct Controls {
     pub jump: Option<f32>,
     /// Held to break the targeted block, which takes as long as `mining::break_ticks` says. Looking away starts over.
     pub attack: bool,
+    /// Held to place a block from the selected hotbar slot against the targeted face, one at once and then one every
+    /// `PLACE_INTERVAL` ticks. A block isn't placed into a solid block, outside the world, or where the player stands.
+    pub place: bool,
+    /// The hotbar slot placing takes from, in `0..HOTBAR`; anything higher means the last.
+    pub slot: usize,
 }
 
 pub struct Player {
@@ -55,6 +62,8 @@ pub struct Player {
     breaking: Option<(IVec3, u32)>,
     /// Blocks broken so far, which picks each one's drop.
     broken: u32,
+    /// Ticks until place, held, places again.
+    place_wait: u32,
     /// Vertical speed in blocks per tick; up is positive.
     fall_velocity: f32,
     on_ground: bool,
@@ -72,6 +81,7 @@ impl Player {
             inventory: Inventory::default(),
             breaking: None,
             broken: 0,
+            place_wait: 0,
             body: Body {
                 position: feet,
                 half_width: 0.3,
@@ -113,6 +123,7 @@ impl Player {
     pub fn tick(&mut self, world: &mut World) -> BVec3 {
         self.previous = (self.body.position, self.swing, self.swing_phase);
         self.break_target(world);
+        self.place_on_target(world);
         let controls = self.controls;
         if let Some(height) = self.controls.jump.take()
             && self.on_ground
@@ -160,6 +171,38 @@ impl Player {
         } else {
             self.breaking = Some((hit.block, held));
         }
+    }
+
+    /// Places a block from the selected slot in the open cell in front of the targeted face, if place is held and it's time.
+    fn place_on_target(&mut self, world: &mut World) {
+        if !self.controls.place {
+            self.place_wait = 0;
+            return;
+        }
+        if self.place_wait > 0 {
+            self.place_wait -= 1;
+            return;
+        }
+        let Some(hit) = self.target(world) else {
+            return;
+        };
+        let cell = hit.block + hit.face;
+        let slot = self.controls.slot.min(HOTBAR - 1);
+        let Some(stack) = self.inventory.slot(slot) else {
+            return;
+        };
+        if !world.is_loaded(cell) || world.block(cell).is_solid() || self.body.overlaps_block(cell) {
+            return;
+        }
+        let block = match stack.block {
+            Block::OakLog(_) if hit.face.x != 0 => Block::OakLog(Axis::X),
+            Block::OakLog(_) if hit.face.z != 0 => Block::OakLog(Axis::Z),
+            Block::OakLog(_) => Block::OakLog(Axis::Y),
+            block => block,
+        };
+        self.inventory.take(slot);
+        world.set_block(cell, block);
+        self.place_wait = PLACE_INTERVAL - 1;
     }
 
     /// How to draw the player `alpha` of the way from the last tick to the next.
@@ -397,6 +440,65 @@ mod tests {
         assert_eq!(world.block(IVec3::new(8, 2, 6)), Block::Dirt);
         player.tick(&mut world);
         assert_eq!(world.block(IVec3::new(8, 2, 6)), Block::Air);
+    }
+
+    #[test]
+    fn placing_puts_the_selected_block_against_the_targeted_face() {
+        let mut world = floor();
+        world.set_block(IVec3::new(8, 2, 5), Block::Stone);
+        let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
+        player.inventory.add(Block::Dirt, 1);
+        player.inventory.add(Block::OakLog(Axis::Y), 2);
+        player.controls.place = true;
+        player.controls.slot = 1;
+        player.tick(&mut world);
+        assert_eq!(
+            world.block(IVec3::new(8, 2, 6)),
+            Block::OakLog(Axis::Z),
+            "the grain runs out from the face"
+        );
+        // Held on: the next goes on the log just placed, a few ticks later.
+        for _ in 0..PLACE_INTERVAL - 1 {
+            player.tick(&mut world);
+        }
+        assert_eq!(world.block(IVec3::new(8, 2, 7)), Block::Air);
+        player.tick(&mut world);
+        assert_eq!(world.block(IVec3::new(8, 2, 7)), Block::OakLog(Axis::Z));
+        assert_eq!(player.inventory.slot(1), None);
+        // Nothing is placed from an empty slot, nor where the player stands.
+        player.controls.slot = 7;
+        player.tick(&mut world);
+        player.controls.slot = 0;
+        player.controls.head_pitch = -std::f32::consts::FRAC_PI_2;
+        for _ in 0..10 {
+            player.tick(&mut world);
+        }
+        assert_eq!(world.block(IVec3::new(8, 1, 8)), Block::Air);
+        assert_eq!(player.inventory.slot(0).map(|stack| stack.count), Some(1));
+    }
+
+    #[test]
+    fn jumping_and_placing_underfoot_builds_a_pillar() {
+        let mut world = World::empty(IVec3::new(1, 2, 1));
+        for x in 0..16 {
+            for z in 0..16 {
+                world.set_block(IVec3::new(x, 0, z), Block::Stone);
+            }
+        }
+        let mut player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
+        player.inventory.add(Block::Cobblestone, 5);
+        player.controls.place = true;
+        player.controls.head_pitch = -std::f32::consts::FRAC_PI_2;
+        for _ in 0..400 {
+            if player.on_ground && player.inventory.slot(0).is_some() {
+                player.controls.jump = Some(*JUMP_HEIGHTS.end());
+            }
+            player.tick(&mut world);
+        }
+        for y in 1..=5 {
+            assert_eq!(world.block(IVec3::new(8, y, 8)), Block::Cobblestone, "{y}");
+        }
+        assert_eq!(player.body.position.y, 6.0);
     }
 
     #[test]

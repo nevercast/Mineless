@@ -55,6 +55,12 @@ impl Body {
         }
     }
 
+    /// Whether the body overlaps the block cell at `position`. Merely touching it doesn't count.
+    pub fn overlaps_block(&self, position: IVec3) -> bool {
+        let (body, block) = (self.aabb(), Aabb::block(position));
+        (0..3).all(|a| body.max[a] - EPSILON > block.min[a] && body.min[a] + EPSILON < block.max[a])
+    }
+
     /// Moves by up to `delta`, stopping flush against any solid block in the way. Returns which
     /// axes were cut short.
     pub fn move_and_collide(&mut self, world: &World, delta: Vec3) -> BVec3 {
@@ -139,6 +145,16 @@ mod tests {
         assert!(body.aabb().max.x <= 3.0);
         let blocked = body.move_and_collide(&room(), Vec3::new(0.0, 0.0, 0.5));
         assert_eq!(blocked, BVec3::FALSE, "resting a hair inside the floor doesn't snag");
+    }
+
+    #[test]
+    fn overlapping_a_block_is_more_than_touching_it() {
+        let body = body_at(1.5, 1.0, 5.5);
+        assert!(body.overlaps_block(IVec3::new(1, 1, 5)));
+        assert!(body.overlaps_block(IVec3::new(1, 2, 5)), "the head");
+        assert!(!body.overlaps_block(IVec3::new(1, 0, 5)), "the block it stands on");
+        assert!(!body.overlaps_block(IVec3::new(1, 3, 5)));
+        assert!(!body.overlaps_block(IVec3::new(2, 1, 5)));
     }
 
     #[test]
