@@ -3,28 +3,28 @@
 //! the tick back. Everything crossing to the game is plain numbers and `#[repr(C)]` structs in the script's memory, so a
 //! script in any language that compiles to WASM can import the same functions from the `mineless` module.
 
-/// A kind of block, by its id in the game. Ids are never reused, so a script built today reads tomorrow's worlds.
+/// A kind of block. It crosses to the game as its place in this list, which scripts never need to see, so new kinds only
+/// ever go on the end.
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Block {
-    Air = 0,
-    Grass = 1,
-    Dirt = 2,
-    Stone = 3,
-    Cobblestone = 4,
-    Sand = 5,
-    Gravel = 6,
-    Snow = 7,
+    Air,
+    Grass,
+    Dirt,
+    Stone,
+    Cobblestone,
+    Sand,
+    Gravel,
+    Snow,
     /// Whichever way its grain runs.
-    OakLog = 8,
-    OakLeaves = 9,
-    Water = 10,
-    WorldBorder = 11,
+    OakLog,
+    OakLeaves,
+    Water,
+    WorldBorder,
 }
 
 impl Block {
-    /// `None` for an id this version of the API doesn't know, such as a block added to the game later.
-    pub fn from_id(id: u32) -> Option<Block> {
+    const ALL: [Block; 12] = {
         use Block::*;
         [
             Air,
@@ -40,8 +40,11 @@ impl Block {
             Water,
             WorldBorder,
         ]
-        .into_iter()
-        .find(|&block| block as u32 == id)
+    };
+
+    /// `None` for a block added to the game after this version of the API.
+    fn from_wire(number: u32) -> Option<Block> {
+        Block::ALL.get(number as usize).copied()
     }
 }
 
@@ -135,7 +138,7 @@ pub fn set_controls(controls: &Controls) {
 pub fn block(position: [i32; 3]) -> Option<Block> {
     let [x, y, z] = position;
     // SAFETY: takes plain numbers only.
-    Block::from_id(unsafe { host::block(x, y, z) })
+    Block::from_wire(unsafe { host::block(x, y, z) })
 }
 
 /// The blocks of one kind within `SIGHT` of the feet, nearest first, filling at most `found.len()` of `found`. Returns how
@@ -151,7 +154,7 @@ pub fn inventory(slot: u32) -> Option<(Block, u32)> {
     let mut stack = Stack::default();
     // SAFETY: the game writes one `Stack` through a pointer to a live one.
     let filled = unsafe { host::inventory(slot, &mut stack) } != 0;
-    filled.then(|| Some((Block::from_id(stack.block)?, stack.count))).flatten()
+    filled.then(|| Some((Block::from_wire(stack.block)?, stack.count))).flatten()
 }
 
 /// Writes a line to the game's console.
@@ -165,10 +168,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_id_up_to_the_newest_block_reads_back_and_later_ones_are_unknown() {
-        for id in 0..=Block::WorldBorder as u32 {
-            assert_eq!(Block::from_id(id).map(|block| block as u32), Some(id));
+    fn blocks_cross_as_their_place_in_the_list_and_later_ones_are_unknown() {
+        for (number, block) in Block::ALL.into_iter().enumerate() {
+            assert_eq!(block as usize, number);
+            assert_eq!(Block::from_wire(number as u32), Some(block));
         }
-        assert_eq!(Block::from_id(Block::WorldBorder as u32 + 1), None);
+        assert_eq!(Block::from_wire(Block::ALL.len() as u32), None);
     }
 }
