@@ -7,7 +7,7 @@ use crate::avatar::{Avatar, Pose, Skin};
 use crate::inventory::{HOTBAR, Inventory};
 use crate::mining;
 use crate::physics::Body;
-use crate::world::{Axis, Block, Hit, World};
+use crate::world::{Axis, Block, Facing, Hit, World};
 
 /// Simulation ticks per second, as in Minecraft.
 pub const TICK_RATE: f32 = 20.0;
@@ -47,7 +47,7 @@ pub struct Controls {
     /// Held to break the targeted block, which takes as long as `mining::break_ticks` says. Looking away starts over.
     pub attack: bool,
     /// Held to place a block from the selected hotbar slot against the targeted face, one at once and then one every
-    /// `PLACE_INTERVAL` ticks. A block isn't placed into a solid block, outside the world, or where any player stands.
+    /// `PLACE_INTERVAL` ticks. Stairs step up the way the body faces, so a builder can aim with its head alone. A block isn't placed into a solid block, outside the world, or where any player stands.
     pub place: bool,
     /// The hotbar slot placing takes from, in `0..HOTBAR`; anything higher means the last.
     pub slot: usize,
@@ -117,6 +117,17 @@ impl Player {
         let eye = self.body.position + Vec3::Y * EYE_HEIGHT;
         let hit = world.raycast(eye, self.look_direction(), REACH)?;
         (world.block(hit.block) != Block::WorldBorder).then_some(hit)
+    }
+
+    /// Whether a crafting table is within reach of the eyes, which lets the player craft what needs one.
+    pub fn at_crafting_table(&self, world: &World) -> bool {
+        let eye = self.body.position + Vec3::Y * EYE_HEIGHT;
+        let reach = REACH.ceil() as i32;
+        let (first, last) = (eye.floor().as_ivec3() - reach, eye.floor().as_ivec3() + reach);
+        (first.x..=last.x)
+            .flat_map(|x| (first.y..=last.y).flat_map(move |y| (first.z..=last.z).map(move |z| IVec3::new(x, y, z))))
+            .filter(|&cell| world.block(cell) == Block::CraftingTable)
+            .any(|cell| eye.clamp(cell.as_vec3(), cell.as_vec3() + 1.0).distance(eye) <= REACH)
     }
 
     /// Unit vector the head looks along.
@@ -209,6 +220,10 @@ impl Player {
             Block::OakLog(_) if hit.face.x != 0 => Block::OakLog(Axis::X),
             Block::OakLog(_) if hit.face.z != 0 => Block::OakLog(Axis::Z),
             Block::OakLog(_) => Block::OakLog(Axis::Y),
+            Block::OakStairs(_) => {
+                let (sin, cos) = self.controls.yaw.sin_cos();
+                Block::OakStairs(Facing::of(Vec3::new(-sin, 0.0, -cos)))
+            }
             block => block,
         };
         self.inventory.take(slot);
@@ -272,6 +287,19 @@ mod tests {
             }
         }
         world
+    }
+
+    #[test]
+    fn a_crafting_table_is_in_reach_up_to_four_and_a_half_blocks_from_the_eyes() {
+        let mut world = floor();
+        let player = Player::new(Vec3::new(8.5, 1.0, 8.5), 0.0, Skin::Player);
+        assert!(!player.at_crafting_table(&world));
+        // Its near face is 4.5 blocks from the eyes, then 4.5 and a bit.
+        world.set_block(IVec3::new(13, 2, 8), Block::CraftingTable);
+        assert!(player.at_crafting_table(&world));
+        world.set_block(IVec3::new(13, 2, 8), Block::Air);
+        world.set_block(IVec3::new(13, 2, 9), Block::CraftingTable);
+        assert!(!player.at_crafting_table(&world));
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub struct Stack {
     pub count: u8,
 }
 
+#[derive(Clone)]
 pub struct Inventory {
     slots: [Option<Stack>; SLOTS],
 }
@@ -47,6 +48,41 @@ impl Inventory {
             count -= moved;
         }
         count
+    }
+
+    /// Swaps what two slots hold, as moving stacks round the inventory does.
+    pub fn swap(&mut self, a: usize, b: usize) {
+        self.slots.swap(a, b);
+    }
+
+    /// How many of `block` it holds across every slot.
+    pub fn count(&self, block: Block) -> u32 {
+        self.slots
+            .iter()
+            .flatten()
+            .filter(|stack| stack.block == block)
+            .map(|stack| u32::from(stack.count))
+            .sum()
+    }
+
+    /// Takes `count` of `block`, from the last slots first so the hotbar keeps what it holds as long as it can. Takes nothing
+    /// and returns false if it holds fewer.
+    pub fn remove(&mut self, block: Block, mut count: u32) -> bool {
+        if self.count(block) < count {
+            return false;
+        }
+        for slot in self.slots.iter_mut().rev() {
+            let Some(stack) = slot.as_mut().filter(|stack| stack.block == block) else {
+                continue;
+            };
+            let taken = count.min(u32::from(stack.count));
+            stack.count -= taken as u8;
+            count -= taken;
+            if stack.count == 0 {
+                *slot = None;
+            }
+        }
+        true
     }
 
     /// Takes one block out of `slot`, if it holds any.
@@ -111,6 +147,20 @@ mod tests {
                 count: 64
             })
         );
+    }
+
+    #[test]
+    fn removing_takes_from_the_last_slots_first() {
+        let mut inventory = Inventory::default();
+        inventory.add(Block::Sand, 64);
+        inventory.add(Block::Dirt, 1);
+        inventory.add(Block::Sand, 10);
+        assert_eq!(inventory.count(Block::Sand), 74);
+        assert!(!inventory.remove(Block::Sand, 75));
+        assert!(inventory.remove(Block::Sand, 12));
+        assert_eq!(inventory.slot(2), None);
+        assert_eq!(inventory.count(Block::Sand), 62);
+        assert_eq!(inventory.slot(1).map(|stack| stack.block), Some(Block::Dirt));
     }
 
     #[test]

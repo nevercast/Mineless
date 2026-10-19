@@ -5,12 +5,14 @@
 use std::fmt;
 
 use glam::{IVec3, Vec2};
+use sim::crafting::{self, RECIPES, Want};
 use sim::game::Game;
+use sim::inventory::SLOTS;
 use sim::player::{Controls, Player};
-use sim::world::{Block, CHUNK_SIZE, World};
+use sim::world::{Axis, Block, CHUNK_SIZE, Facing, World};
 use wasmi::{
-    Caller, Config, Engine, Error, Extern, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc, TypedResumableCall,
-    TypedResumableCallHostTrap, TypedResumableCallOutOfFuel, errors::HostError,
+    Caller, CompilationMode, Config, Engine, Error, Extern, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc,
+    TypedResumableCall, TypedResumableCallHostTrap, TypedResumableCallOutOfFuel, errors::HostError,
 };
 
 /// Fuel a script gets each tick, roughly one per WASM instruction. Enough for a script to look around and decide, small enough
@@ -40,9 +42,36 @@ fn wire(block: Block) -> u32 {
         Block::Snow => Api::Snow,
         Block::OakLog(_) => Api::OakLog,
         Block::OakLeaves => Api::OakLeaves,
+        Block::OakPlanks => Api::OakPlanks,
+        Block::OakStairs(_) => Api::OakStairs,
+        Block::CraftingTable => Api::CraftingTable,
         Block::Water => Api::Water,
         Block::WorldBorder => Api::WorldBorder,
     }) as u32
+}
+
+/// The block a number from the script stands for: the first in the game's blocks that crosses as it.
+fn unwire(number: u32) -> Option<Block> {
+    use Block::*;
+    [
+        Air,
+        Grass,
+        Dirt,
+        Stone,
+        Cobblestone,
+        Sand,
+        Gravel,
+        Snow,
+        OakLog(Axis::Y),
+        OakLeaves,
+        OakPlanks,
+        OakStairs(Facing::North),
+        CraftingTable,
+        Water,
+        WorldBorder,
+    ]
+    .into_iter()
+    .find(|&block| wire(block) == number)
 }
 
 /// A script driving one player.
@@ -88,6 +117,9 @@ impl Agent {
     pub fn load(wasm: &[u8], player: usize, name: String) -> Result<Agent, Error> {
         let mut config = Config::default();
         config.consume_fuel(true);
+        // Translating a function lazily, on its first call, charges fuel that a call can't be paused for, which stops a script
+        // that first calls a big function late in a tick. Translating the whole script up front charges nothing.
+        config.compilation_mode(CompilationMode::Eager);
         let engine = Engine::new(&config);
         let module = Module::new(&engine, wasm)?;
         let host = Host {
@@ -161,6 +193,10 @@ fn linker(engine: &Engine) -> Result<Linker<Host>, Error> {
         .func_wrap("mineless", "block", block)?
         .func_wrap("mineless", "find_nearest", find_nearest)?
         .func_wrap("mineless", "inventory", inventory)?
+        .func_wrap("mineless", "crafts", crafts)?
+        .func_wrap("mineless", "craft", craft)?
+        .func_wrap("mineless", "want", want)?
+        .func_wrap("mineless", "swap_slots", swap_slots)?
         .func_wrap("mineless", "log", log)?;
     Ok(linker)
 }
@@ -291,6 +327,71 @@ fn inventory(mut caller: Caller<'_, Host>, slot: u32, address: u32) -> Result<u3
     Ok(1)
 }
 
+/// Writes `agent_api::Craft` for up to `capacity` recipes the player can craft now, and returns how many.
+fn crafts(mut caller: Caller<'_, Host>, address: u32, capacity: u32) -> Result<u32, Error> {
+    let host = caller.data();
+    let player = &host.game.players[host.player];
+    let (inventory, at_table) = (&player.inventory, player.at_crafting_table(&host.game.world));
+    let craftable: Vec<[u32; 3]> = RECIPES
+        .iter()
+        .map(|recipe| {
+            [
+                wire(recipe.output),
+                recipe.count.into(),
+                crafting::times(inventory, recipe, at_table),
+            ]
+        })
+        .filter(|&[.., times]| times > 0)
+        .take(capacity as usize)
+        .collect();
+    let count = craftable.len() as u32;
+    write(&mut caller, address, craftable.into_iter().flatten())?;
+    Ok(count)
+}
+
+/// Crafts what makes `output` up to `times` times, and returns how many times it did.
+fn craft(mut caller: Caller<'_, Host>, output: u32, times: u32) -> u32 {
+    let Some(recipe) = unwire(output).and_then(crafting::recipe_for) else {
+        return 0;
+    };
+    let host = caller.data_mut();
+    let player = &mut host.game.players[host.player];
+    let at_table = player.at_crafting_table(&host.game.world);
+    crafting::craft(&mut player.inventory, recipe, times, at_table)
+}
+
+/// Works towards holding `amount` of `wanted`, as `crafting::want` does. Returns 0 when it holds them, 1 with the missing
+/// `agent_api::Stack` written when something has to be gathered first, 2 when a craft's output didn't fit, and 3 when a
+/// craft needs a crafting table in reach.
+fn want(mut caller: Caller<'_, Host>, wanted: u32, amount: u32, missing: u32) -> Result<u32, Error> {
+    let Some(block) = unwire(wanted) else {
+        return Err(Error::new("want was asked for a block that doesn't exist"));
+    };
+    let host = caller.data_mut();
+    let player = &mut host.game.players[host.player];
+    let at_table = player.at_crafting_table(&host.game.world);
+    match crafting::want(&mut player.inventory, block, amount, at_table) {
+        Want::Done => Ok(0),
+        Want::Missing(block, count) => {
+            write(&mut caller, missing, [wire(block), count])?;
+            Ok(1)
+        }
+        Want::NoRoom => Ok(2),
+        Want::NeedTable => Ok(3),
+    }
+}
+
+/// Swaps two inventory slots and returns 1, or returns 0 if either is past the end.
+fn swap_slots(mut caller: Caller<'_, Host>, a: u32, b: u32) -> u32 {
+    let host = caller.data_mut();
+    let slots = 0..SLOTS as u32;
+    if !slots.contains(&a) || !slots.contains(&b) {
+        return 0;
+    }
+    host.game.players[host.player].inventory.swap(a as usize, b as usize);
+    1
+}
+
 fn log(caller: Caller<'_, Host>, address: u32, len: u32) -> Result<(), Error> {
     let mut text = vec![0; len as usize];
     memory(&caller)?
@@ -379,7 +480,15 @@ mod tests {
     fn layouts_match_the_script_api() {
         assert_eq!(size_of::<agent_api::State>(), 15 * 4);
         assert_eq!(size_of::<agent_api::Controls>(), 9 * 4);
+        assert_eq!(
+            (agent_api::EYE_HEIGHT, agent_api::REACH),
+            (sim::player::EYE_HEIGHT, sim::player::REACH)
+        );
         assert_eq!(wire(Block::OakLog(Axis::X)), wire(Block::OakLog(Axis::Z)));
+        assert_eq!(wire(Block::OakStairs(Facing::East)), wire(Block::OakStairs(Facing::West)));
+        for number in 0..=wire(Block::CraftingTable) {
+            assert_eq!(unwire(number).map(wire), Some(number));
+        }
     }
 
     #[test]
@@ -418,6 +527,23 @@ mod tests {
         assert!(agent.turn(&mut game).is_err());
         assert!(!walking(&game));
         assert!(agent.turn(&mut game).is_ok());
+    }
+
+    #[test]
+    fn wanting_planks_crafts_them_from_a_log() {
+        let mut game = game();
+        game.players[0].inventory.add(Block::OakLog(Axis::Y), 1);
+        let wat = format!(
+            r#"(module
+                (import "mineless" "want" (func $want (param i32 i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (func (export "run") (drop (call $want (i32.const {}) (i32.const 4) (i32.const 0)))))"#,
+            wire(Block::OakPlanks)
+        );
+        let mut agent = Agent::load(wat.as_bytes(), 0, "test".to_owned()).expect("the test script loads");
+        agent.turn(&mut game).expect("the script runs");
+        assert_eq!(game.players[0].inventory.count(Block::OakPlanks), 4);
+        assert_eq!(game.players[0].inventory.count(Block::OakLog(Axis::Y)), 0);
     }
 
     #[test]

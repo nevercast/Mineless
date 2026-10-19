@@ -27,3 +27,8 @@ script = "scripts/target/wasm32-unknown-unknown/release/wander.wasm"
 name = "Pillar"
 skin = "player"
 script = "scripts/target/wasm32-unknown-unknown/release/pillar.wasm"
+
+[[agent]]
+name = "Mason"
+skin = "autumn"
+script = "scripts/target/wasm32-unknown-unknown/release/house.wasm"

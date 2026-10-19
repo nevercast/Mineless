@@ -3,7 +3,7 @@
 
 use glam::{BVec3, IVec3, Vec3};
 
-use crate::world::World;
+use crate::world::{Part, World};
 
 /// How far boxes may sink into each other through rounding and still count as touching, not
 /// overlapping. Without it a box left a hair inside a face it rested on is no longer stopped by it.
@@ -19,6 +19,14 @@ impl Aabb {
     fn block(position: IVec3) -> Self {
         let min = position.as_vec3();
         Self { min, max: min + Vec3::ONE }
+    }
+
+    fn part(position: IVec3, [min, max]: Part) -> Self {
+        let corner = position.as_vec3();
+        Self {
+            min: corner + min,
+            max: corner + max,
+        }
     }
 
     /// How far this box can move along `axis` towards `other`, limited to `distance`. Boxes that
@@ -70,8 +78,7 @@ impl Body {
             max: start.max + delta.max(Vec3::ZERO),
         };
         let blocks: Vec<Aabb> = blocks_touching(&swept)
-            .filter(|&position| world.block(position).is_solid())
-            .map(Aabb::block)
+            .flat_map(|position| world.block(position).shape().iter().map(move |&part| Aabb::part(position, part)))
             .collect();
 
         let mut aabb = start;
@@ -96,7 +103,7 @@ fn blocks_touching(aabb: &Aabb) -> impl Iterator<Item = IVec3> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::Block;
+    use crate::world::{Block, Facing};
 
     /// A stone floor at y = 0 with a stone wall along x = 3.
     fn room() -> World {
@@ -155,6 +162,20 @@ mod tests {
         assert!(!body.overlaps_block(IVec3::new(1, 0, 5)), "the block it stands on");
         assert!(!body.overlaps_block(IVec3::new(1, 3, 5)));
         assert!(!body.overlaps_block(IVec3::new(2, 1, 5)));
+    }
+
+    #[test]
+    fn stairs_stop_a_body_at_the_step_and_hold_it_on_the_tread() {
+        let mut world = room();
+        world.set_block(IVec3::new(2, 1, 5), Block::OakStairs(Facing::East));
+        let mut body = body_at(1.0, 1.0, 5.5);
+        body.move_and_collide(&world, Vec3::new(2.0, 0.0, 0.0));
+        assert!(body.position.abs_diff_eq(Vec3::new(1.7, 1.0, 5.5), 1e-5), "against the slab");
+        let mut body = body_at(2.2, 2.0, 5.5);
+        body.move_and_collide(&world, Vec3::new(0.0, -1.0, 0.0));
+        assert!(body.position.abs_diff_eq(Vec3::new(2.2, 1.5, 5.5), 1e-5), "on the tread");
+        body.move_and_collide(&world, Vec3::new(1.0, 0.0, 0.0));
+        assert!(body.position.abs_diff_eq(Vec3::new(2.2, 1.5, 5.5), 1e-5), "against the step");
     }
 
     #[test]

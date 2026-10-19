@@ -7,6 +7,13 @@ name = "agent-api"
 version = "0.1.0"
 
 [[package]]
+name = "house"
+version = "0.1.0"
+dependencies = [
+ "agent-api",
+]
+
+[[package]]
 name = "pillar"
 version = "0.1.0"
 dependencies = [

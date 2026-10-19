@@ -25,10 +25,10 @@ pub fn connects(connections: Connections, a: usize, b: usize) -> bool {
     connections & pair(a, b) != 0
 }
 
-/// Whether light passes through a block: open space, water, and the border, which is drawn as a
-/// faint plane.
+/// Whether light passes through a block: open space, water, the border, which is drawn as a
+/// faint plane, and blocks that don't fill their cell.
 fn see_through(block: Block) -> bool {
-    matches!(block, Block::Air | Block::Water | Block::WorldBorder)
+    !block.is_opaque() || block == Block::WorldBorder
 }
 
 /// Which sides of the chunk at chunk coordinate `chunk` see each other through it, along paths of

@@ -42,19 +42,55 @@ impl World {
             }
             cell[axis] += step[axis];
             next[axis] += spacing[axis];
-            if self.block(cell).is_solid() {
+            let block = self.block(cell);
+            if block.is_opaque() {
                 let mut face = IVec3::ZERO;
                 face[axis] = -step[axis];
+                return Some(Hit { block: cell, face });
+            }
+            let corner = cell.as_vec3();
+            let entered = block
+                .shape()
+                .iter()
+                .filter_map(|&[min, max]| enter(origin, direction, corner + min, corner + max))
+                .filter(|&(distance, _)| distance <= reach)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((_, face)) = entered {
                 return Some(Hit { block: cell, face });
             }
         }
     }
 }
 
+/// How far along a ray it enters the box from `min` to `max`, and the normal of the face it enters through.
+fn enter(origin: Vec3, direction: Vec3, min: Vec3, max: Vec3) -> Option<(f32, IVec3)> {
+    let mut near = (f32::NEG_INFINITY, IVec3::ZERO);
+    let mut far = f32::INFINITY;
+    for axis in 0..3 {
+        if direction[axis] == 0.0 {
+            if origin[axis] < min[axis] || origin[axis] > max[axis] {
+                return None;
+            }
+            continue;
+        }
+        let (a, b) = (
+            (min[axis] - origin[axis]) / direction[axis],
+            (max[axis] - origin[axis]) / direction[axis],
+        );
+        if a.min(b) > near.0 {
+            let mut face = IVec3::ZERO;
+            face[axis] = if direction[axis] > 0.0 { -1 } else { 1 };
+            near = (a.min(b), face);
+        }
+        far = far.min(a.max(b));
+    }
+    (near.0 <= far && near.0 >= 0.0).then_some(near)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::Block;
+    use crate::world::{Block, Facing};
 
     /// A stone floor at y = 0 and one stone block at (5, 1, 5).
     fn world() -> World {
@@ -114,5 +150,37 @@ mod tests {
         let hit = world.raycast(Vec3::new(0.5, 1.5, 5.5), Vec3::X, 10.0);
         assert_eq!(hit.map(|hit| hit.block), Some(IVec3::new(5, 1, 5)));
         assert!(world.raycast(Vec3::new(0.5, 1.5, 0.5), Vec3::Y, 10.0).is_none());
+    }
+
+    #[test]
+    fn hits_the_parts_of_stairs_and_passes_over_their_missing_corner() {
+        let mut world = world();
+        let stairs = IVec3::new(5, 1, 7);
+        world.set_block(stairs, Block::OakStairs(Facing::East));
+        world.set_block(IVec3::new(5, 1, 9), Block::Stone);
+        let hit = |origin: Vec3, toward: Vec3| world.raycast(origin, toward - origin, 4.5);
+        // Down onto the tread, level into the step above it, and along over the tread to the stone beyond.
+        assert_eq!(
+            hit(Vec3::new(5.25, 3.0, 7.5), Vec3::new(5.25, 1.5, 7.5)),
+            Some(Hit {
+                block: stairs,
+                face: IVec3::Y
+            })
+        );
+        assert_eq!(
+            hit(Vec3::new(3.5, 1.75, 7.5), Vec3::new(5.5, 1.75, 7.5)),
+            Some(Hit {
+                block: stairs,
+                face: IVec3::NEG_X
+            })
+        );
+        let beyond = hit(Vec3::new(5.25, 1.75, 5.5), Vec3::new(5.25, 1.75, 9.5));
+        assert_eq!(
+            beyond,
+            Some(Hit {
+                block: IVec3::new(5, 1, 9),
+                face: IVec3::NEG_Z
+            })
+        );
     }
 }

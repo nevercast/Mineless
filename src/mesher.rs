@@ -2,22 +2,27 @@ use bytemuck::{Pod, Zeroable};
 
 use glam::IVec3;
 
-use sim::world::{Axis, Block, CHUNK_SIZE, World};
+use sim::world::{Axis, Block, CHUNK_SIZE, Facing, World};
 
 /// One corner of a block face packed into 32 bits, unpacked in shader.wgsl. From the low bits:
 /// position in the chunk (5 bits each for x, y, z, since corners reach 16), index into `FACES`
 /// (3 bits), which corner of the face it is, for texture coordinates (2), solid blocks around the
-/// corner for AO (2), the layer of the block texture array (8), and whether the face looks into a cave (1), for the x-ray view.
+/// corner for AO (2), the layer of the block texture array (6), half a block more along x and along y (1 each), whether the face
+/// looks into a cave (1), for the x-ray view, and half a block more along z (1). The half steps came last, for stairs, and took
+/// what was free without moving the cave bit.
 /// The chunk's world position is an instance attribute shared by every vertex in the chunk.
 #[repr(transparent)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Vertex(u32);
 
 impl Vertex {
-    fn new(position: IVec3, face: usize, corner: usize, occluders: usize, tile: Tile, cave: bool) -> Self {
-        let [x, y, z] = position.as_uvec3().to_array();
+    /// `halves` is the position in half blocks.
+    fn new(halves: IVec3, face: usize, corner: usize, occluders: usize, tile: Tile, cave: bool) -> Self {
+        let [x, y, z] = (halves / 2).as_uvec3().to_array();
+        let [half_x, half_y, half_z] = (halves % 2).as_uvec3().to_array();
         let fields = (face as u32) << 15 | (corner as u32) << 18 | (occluders as u32) << 20 | (tile as u32) << 22 | u32::from(cave) << 30;
-        Self(x | y << 5 | z << 10 | fields)
+        let halves = half_x << 28 | half_y << 29 | half_z << 31;
+        Self(x | y << 5 | z << 10 | fields | halves)
     }
 }
 
@@ -36,10 +41,14 @@ pub enum Tile {
     OakLogTop,
     OakLeaves,
     Water,
+    OakPlanks,
+    CraftingTableTop,
+    CraftingTableFront,
+    CraftingTableSide,
 }
 
 impl Tile {
-    pub const ALL: [Tile; 12] = [
+    pub const ALL: [Tile; 16] = [
         Tile::GrassTop,
         Tile::GrassSide,
         Tile::Dirt,
@@ -52,6 +61,10 @@ impl Tile {
         Tile::OakLogTop,
         Tile::OakLeaves,
         Tile::Water,
+        Tile::OakPlanks,
+        Tile::CraftingTableTop,
+        Tile::CraftingTableFront,
+        Tile::CraftingTableSide,
     ];
 
     /// The tile for the face of `block` facing `normal`.
@@ -71,6 +84,13 @@ impl Tile {
             Block::OakLog(axis) if along(axis, normal) => Tile::OakLogTop,
             Block::OakLog(_) => Tile::OakLog,
             Block::OakLeaves => Tile::OakLeaves,
+            Block::OakPlanks | Block::OakStairs(_) => Tile::OakPlanks,
+            Block::CraftingTable => match normal {
+                IVec3::Y => Tile::CraftingTableTop,
+                IVec3::NEG_Y => Tile::OakPlanks,
+                _ if normal.x != 0 => Tile::CraftingTableFront,
+                _ => Tile::CraftingTableSide,
+            },
             Block::Water => Tile::Water,
             Block::Air | Block::WorldBorder => unreachable!("{block:?} has no faces"),
         }
@@ -198,7 +218,7 @@ pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> ChunkMesh {
     let buried = |chunk: IVec3| {
         world
             .uniform_chunk(chunk)
-            .is_some_and(|block| block.is_solid() && block != Block::WorldBorder)
+            .is_some_and(|block| block.is_opaque() && block != Block::WorldBorder)
     };
     if world.uniform_chunk(chunk) == Some(Block::Air) || buried(chunk) && FACES.iter().all(|face| buried(chunk + face.normal)) {
         return ChunkMesh::default();
@@ -213,18 +233,22 @@ pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> ChunkMesh {
                 let local = IVec3::new(x, y, z);
                 let position = origin + local;
                 let block = blocks.block(position);
+                if let Block::OakStairs(facing) = block {
+                    push_stairs(&mut opaque, &blocks, position, local, facing);
+                    continue;
+                }
                 for (index, face) in FACES.iter().enumerate() {
                     let neighbour = blocks.block(position + face.normal);
                     if block == Block::Water && neighbour == Block::Air {
-                        push_face(&mut water, index, local, Tile::Water, false, [0; 4], false);
-                    } else if block.is_solid() && !neighbour.is_solid() {
+                        push_face(&mut water, index, whole(local), Tile::Water, false, [0; 4], false);
+                    } else if block.is_solid() && !neighbour.is_opaque() {
                         let tile = Tile::for_face(block, face.normal);
                         let turned = quarter_turned(block, face.normal);
                         let occlusion = face_occlusion(&blocks, position, face);
                         // The world's floor looks down into the void, which isn't a cave even with the whole world over it.
                         let in_front = position + face.normal;
                         let cave = neighbour == Block::Air && in_front.y >= 0 && blocks.roofed(in_front);
-                        push_face(&mut opaque, index, local, tile, turned, occlusion, cave);
+                        push_face(&mut opaque, index, whole(local), tile, turned, occlusion, cave);
                     }
                 }
             }
@@ -237,7 +261,7 @@ pub fn build_chunk_mesh(world: &World, chunk: IVec3) -> ChunkMesh {
 /// cell in front of the face. Two solid sides fully enclose the corner whatever the diagonal is.
 fn face_occlusion(blocks: &Snapshot, position: IVec3, face: &Face) -> [usize; 4] {
     let in_front = position + face.normal;
-    let solid = |offset: IVec3| blocks.block(in_front + offset).is_solid();
+    let solid = |offset: IVec3| blocks.block(in_front + offset).is_opaque();
     face.corners.map(|corner| {
         // Step towards the corner along each axis the face lies in (the ones the normal ignores).
         let toward = IVec3::from_array(corner.map(|c| 2 * c - 1));
@@ -254,12 +278,70 @@ fn face_occlusion(blocks: &Snapshot, position: IVec3, face: &Face) -> [usize; 4]
     })
 }
 
-/// `local` is the block's position inside its chunk. A `turned` face gives each corner the next
-/// corner's texture coordinates, which turns the texture without touching positions or AO. A `cave` face looks into a cave.
-fn push_face(mesh: &mut Mesh, face: usize, local: IVec3, tile: Tile, turned: bool, occlusion: [usize; 4], cave: bool) {
+/// The faces of stairs that face east, each the face of a box from one corner to the other in half blocks: the slab, the tread
+/// on its open half, then the step.
+const EAST_STAIRS: [(IVec3, IVec3, IVec3); 11] = {
+    const SLAB: (IVec3, IVec3) = (IVec3::ZERO, IVec3::new(2, 1, 2));
+    const TREAD: (IVec3, IVec3) = (IVec3::ZERO, IVec3::new(1, 1, 2));
+    const STEP: (IVec3, IVec3) = (IVec3::new(1, 1, 0), IVec3::splat(2));
+    [
+        (SLAB.0, SLAB.1, IVec3::NEG_Y),
+        (SLAB.0, SLAB.1, IVec3::NEG_X),
+        (SLAB.0, SLAB.1, IVec3::X),
+        (SLAB.0, SLAB.1, IVec3::Z),
+        (SLAB.0, SLAB.1, IVec3::NEG_Z),
+        (TREAD.0, TREAD.1, IVec3::Y),
+        (STEP.0, STEP.1, IVec3::Y),
+        (STEP.0, STEP.1, IVec3::NEG_X),
+        (STEP.0, STEP.1, IVec3::X),
+        (STEP.0, STEP.1, IVec3::Z),
+        (STEP.0, STEP.1, IVec3::NEG_Z),
+    ]
+};
+
+/// Turns a point in half blocks around the middle of the cell, from facing east to facing `facing`. With `offset` 0 it turns
+/// a direction instead.
+fn turn(facing: Facing, IVec3 { x, y, z }: IVec3, offset: i32) -> IVec3 {
+    match facing {
+        Facing::East => IVec3::new(x, y, z),
+        Facing::South => IVec3::new(offset - z, y, x),
+        Facing::West => IVec3::new(offset - x, y, offset - z),
+        Facing::North => IVec3::new(z, y, offset - x),
+    }
+}
+
+/// Stairs show every face but those on the cell's sides against an opaque block. They aren't shaded by their surroundings,
+/// and nor are they ever in a cave.
+fn push_stairs(mesh: &mut Mesh, blocks: &Snapshot, position: IVec3, local: IVec3, facing: Facing) {
+    for (a, b, normal) in EAST_STAIRS {
+        let (a, b, normal) = (turn(facing, a, 2), turn(facing, b, 2), turn(facing, normal, 0));
+        let (min, max) = (a.min(b), b.max(a));
+        let axis = normal.abs().max_position();
+        let on_side = if normal[axis] > 0 { max[axis] == 2 } else { min[axis] == 0 };
+        if on_side && blocks.block(position + normal).is_opaque() {
+            continue;
+        }
+        let face = FACES
+            .iter()
+            .position(|face| face.normal == normal)
+            .expect("stairs turn onto the six faces");
+        let tile = Tile::for_face(Block::OakStairs(facing), normal);
+        push_face(mesh, face, (local * 2 + min, local * 2 + max), tile, false, [0; 4], false);
+    }
+}
+
+/// The box of the whole block at `local` in the chunk, in half blocks.
+fn whole(local: IVec3) -> (IVec3, IVec3) {
+    (local * 2, local * 2 + 2)
+}
+
+/// Pushes the face of a box from `min` to `max`, in half blocks within the chunk: a whole block's or part of one. A `turned`
+/// face gives each corner the next corner's texture coordinates, which turns the texture without touching positions or AO. A
+/// `cave` face looks into a cave.
+fn push_face(mesh: &mut Mesh, face: usize, (min, max): (IVec3, IVec3), tile: Tile, turned: bool, occlusion: [usize; 4], cave: bool) {
     let base = u16::try_from(mesh.vertices.len()).expect("a chunk has at most 49,152 vertices");
     for (corner_index, (corner, occluders)) in FACES[face].corners.iter().zip(occlusion).enumerate() {
-        let position = local + IVec3::from_array(*corner);
+        let position = IVec3::select(IVec3::from_array(*corner).cmpeq(IVec3::ONE), max, min);
         let texture_corner = (corner_index + usize::from(turned)) % 4;
         mesh.vertices
             .push(Vertex::new(position, face, texture_corner, occluders, tile, cave));
@@ -320,11 +402,14 @@ mod tests {
 
     #[test]
     fn vertex_fields_pack_without_overlapping() {
-        let Vertex(packed) = Vertex::new(IVec3::new(16, 3, 9), 5, 3, 2, Tile::Cobblestone, true);
+        let Vertex(packed) = Vertex::new(IVec3::new(32, 7, 18), 5, 3, 2, Tile::Cobblestone, true);
         let field = |shift: u32, bits: u32| (packed >> shift) & ((1 << bits) - 1);
         assert_eq!([field(0, 5), field(5, 5), field(10, 5)], [16, 3, 9]);
         assert_eq!([field(15, 3), field(18, 2), field(20, 2)], [5, 3, 2]);
-        assert_eq!([field(22, 8), packed >> 30], [Tile::Cobblestone as u32, 1]);
+        assert_eq!(
+            [field(22, 6), field(28, 2), field(30, 1), packed >> 31],
+            [Tile::Cobblestone as u32, 2, 1, 0]
+        );
     }
 
     fn texture_corners(mesh: &Mesh) -> Vec<u32> {
@@ -384,6 +469,29 @@ mod tests {
         let mut world = World::empty(IVec3::ONE);
         world.set_block(IVec3::new(3, 3, 3), Block::Stone);
         assert_eq!(face_count(&world, IVec3::ZERO), 6);
+    }
+
+    #[test]
+    fn stairs_show_their_steps_and_hide_only_sides_against_opaque_blocks() {
+        for facing in [Facing::North, Facing::East, Facing::South, Facing::West] {
+            let mut world = World::empty(IVec3::ONE);
+            let stairs = IVec3::new(3, 3, 3);
+            world.set_block(stairs, Block::OakStairs(facing));
+            let mesh = build_chunk_mesh(&world, IVec3::ZERO).opaque;
+            assert_eq!(mesh.indices.len() / 6, 11);
+            let toward = match facing {
+                Facing::North => IVec3::NEG_Z,
+                Facing::East => IVec3::X,
+                Facing::South => IVec3::Z,
+                Facing::West => IVec3::NEG_X,
+            };
+            world.set_block(stairs + toward, Block::Stone);
+            world.set_block(stairs - IVec3::Y, Block::Stone);
+            world.set_block(stairs - toward, Block::Cobblestone);
+            // Blocks behind, below and in front hide the two faces of the back, the bottom and the slab's front, and each keeps
+            // all six of its own, since stairs don't fill their cell.
+            assert_eq!(face_count(&world, IVec3::ZERO), 11 - 4 + 3 * 6, "{facing:?}");
+        }
     }
 
     #[test]
@@ -465,7 +573,7 @@ mod tests {
                     && IVec3::new((v & 31) as i32, (v >> 5 & 31) as i32, (v >> 10 & 31) as i32) == corner
             })
             .expect("the face is drawn");
-        packed >> 30 == 1
+        (packed >> 30) & 1 == 1
     }
 
     #[test]
